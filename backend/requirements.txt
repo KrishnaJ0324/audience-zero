@@ -1,5 +1,9 @@
-fastapi==0.115.6
-uvicorn[standard]==0.34.0
+# Runtime deps — read by both the local venv and the Databricks Apps build.
+# fastapi/uvicorn are deliberately unpinned: the Apps runtime preinstalls them and
+# a conflicting pin resolves slowly or crash-loops the app. Test-only deps live in
+# requirements-dev.txt so they never reach the deployed image.
+fastapi
+uvicorn[standard]
 pydantic==2.10.4
 pydantic-settings==2.7.1
 PyYAML==6.0.2
@@ -9,5 +13,3 @@ httpx==0.28.1
 openai==1.59.6
 sse-starlette==2.2.1
 reportlab==4.2.5
-pytest==8.3.4
-pytest-asyncio==0.25.2

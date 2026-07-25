@@ -7,8 +7,13 @@ __pycache__/
 
 # data / generated artifacts
 backend/data/*.db
+backend/data/*.db.*
 backend/data/audio/*.wav
 backend/data/audio/*.mp3
+backend/.venv
+
+# databricks CLI local state — carries the workspace host and user path
+backend/.databricks/
 
 # node / frontend
 node_modules/
@@ -19,3 +24,4 @@ frontend/.vite/
 plan_extracted.txt
 .DS_Store
 *.log
+*.bak
