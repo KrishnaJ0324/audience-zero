@@ -156,6 +156,40 @@ class MockLLM:
         )
 
 
+    async def chat_persona(self, messages: list[dict]) -> dict:
+        """Deterministic offline persona designer. Accumulates the user's words
+        into a draft prompt; refines with each turn."""
+        users = [m.get("content", "") for m in messages if m.get("role") == "user"]
+        intent = " ".join(u.strip() for u in users if u).strip()
+        name = None
+        m = re.search(
+            r"(?:call (?:it|them|him|her)|name[d]?(?: it| them)?|persona)\s+[\"']?([A-Z][a-zA-Z]+)",
+            intent,
+        )
+        if m:
+            name = m.group(1)
+        if not name:
+            caps = re.findall(r"\b([A-Z][a-z]{2,})\b", intent)
+            name = caps[0] if caps else "Custom Listener"
+        traits = intent if intent else "a general audio listener"
+        prompt = (
+            f"You are {name}, {traits}. Score each beat's engagement 0-100 from your "
+            f"taste alone — reward what you like, punish what bores you, and skip when "
+            f"a beat loses you."
+        )
+        reply = (
+            f"Here's a draft for {name}, described as: {traits[:180]}. "
+            f"Tell me what to adjust (patience, genre tastes, what makes them skip), "
+            f"or say 'looks good' to save. (Offline draft — with an OpenAI key this "
+            f"conversation is fully generative.)"
+        )
+        return {
+            "reply": reply,
+            "draft": {"name": name, "archetype": "Custom listener",
+                      "system_prompt": prompt, "ready": bool(intent)},
+        }
+
+
 class MockSTT:
     async def transcribe(self, audio_bytes: bytes, filename: str) -> tuple[str, float]:
         # We can't really decode arbitrary audio offline; return a canned

@@ -103,6 +103,81 @@ class OpenAILLM:
         except Exception:
             return heuristics.make_report(persona, episode, beats)
 
+    async def chat_persona(self, messages: list[dict]) -> dict:
+        """Conversational persona designer. Returns {reply, draft} every turn."""
+        sys = (
+            "You are a persona designer for a synthetic audio test-audience. Help the "
+            "user craft ONE listener persona that will score audio-drama/podcast beats. "
+            "Converse naturally to refine tastes, patience, and what makes them skip. "
+            "On EVERY turn return STRICT JSON: {\"reply\": str, \"draft\": {\"name\": str, "
+            "\"archetype\": str, \"system_prompt\": str, \"ready\": bool}}. The "
+            "system_prompt is second-person ('You are …'), 2-4 sentences, and instructs "
+            "them to score each beat 0-100 from their taste. Set ready=true once the "
+            "persona is coherent enough to save."
+        )
+        convo = [{"role": "system", "content": sys}] + [
+            {"role": m["role"], "content": m["content"]}
+            for m in messages if m.get("role") in ("user", "assistant")
+        ]
+        try:
+            resp = await self.client.chat.completions.create(
+                model=self.s.segmenter_model, messages=convo,
+                response_format={"type": "json_object"}, temperature=0.7,
+            )
+            data = json.loads(resp.choices[0].message.content or "{}")
+            d = data.get("draft") or {}
+            return {
+                "reply": str(data.get("reply", "")),
+                "draft": {
+                    "name": str(d.get("name", "")),
+                    "archetype": str(d.get("archetype", "Custom listener")),
+                    "system_prompt": str(d.get("system_prompt", "")),
+                    "ready": bool(d.get("ready", False)),
+                },
+            }
+        except Exception as exc:
+            return {
+                "reply": f"(model error — {str(exc)[:80]}) You can still fill the fields manually.",
+                "draft": {"name": "", "archetype": "Custom listener", "system_prompt": "", "ready": False},
+            }
+
+    async def summarize(self, deterministic: str) -> str:
+        """Polish the deterministic producer summary (numbers must stay exact)."""
+        try:
+            resp = await self.client.chat.completions.create(
+                model=self.s.segmenter_model,
+                messages=[
+                    {"role": "system", "content":
+                        "Rewrite this audio-episode analysis for a busy producer in 2–3 "
+                        "crisp sentences. Keep every number and beat reference exact. No hype."},
+                    {"role": "user", "content": deterministic},
+                ],
+                temperature=0.4,
+            )
+            return (resp.choices[0].message.content or deterministic).strip()
+        except Exception:
+            return deterministic
+
+    async def cite_evidence(self, beat_text: str, reason: str) -> list[str]:
+        """Ask the model to cite up to 2 verbatim phrases behind a drop."""
+        try:
+            resp = await self.client.chat.completions.create(
+                model=self.s.default_persona_model,
+                messages=[
+                    {"role": "system", "content":
+                        "Quote up to 2 SHORT verbatim phrases from the scene that a listener "
+                        f"would find '{reason}'. Phrases must appear VERBATIM in the text. "
+                        "Return STRICT JSON: {\"quotes\":[str]}."},
+                    {"role": "user", "content": beat_text[:2000]},
+                ],
+                response_format={"type": "json_object"},
+                temperature=0.2,
+            )
+            data = json.loads(resp.choices[0].message.content or "{}")
+            return [str(q) for q in data.get("quotes", [])][:2]
+        except Exception:
+            return []
+
     async def revise(
         self, beat: Beat, critiques: list[str], speakers: list[str]
     ) -> RevisedScene:

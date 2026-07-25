@@ -106,6 +106,24 @@ A producer can:
 - **AI-audio disclosure** — every generated clip carries an AI-generated /
   voice-consent badge.
 
+- **Calibration** — attach the episode's real post-publish retention (paste
+  per-beat numbers or upload) or **simulate a sample**; the run then shows a
+  predicted-vs-actual overlay with mean-absolute-error and correlation, and a
+  calibration-state chip. This is the "your data makes it sharper" flywheel.
+- **Voice consent** — the AI-audio disclosure is settable per revision
+  (synthetic / consented / pending / unknown) for when a real voice is swapped in.
+- **Model-enriched (with an OpenAI key)** — the analysis adds model-cited
+  evidence spans (`source: "model"`) on the weakest beat, and the report summary
+  can be AI-polished on demand ("✨ Polish with AI"). Both fall back to the
+  deterministic path and never block a run.
+- **Custom test personas** (`#/personas`) — add your own listener to the panel:
+  name it, give it a category, write its persona prompt, or **draft it in a
+  multi-turn chat**. Saved personas join the roster and **auto-participate in
+  every new analysis** — appearing in the attention graph, persona cards,
+  verdict, evidence, and sweep. With an OpenAI key the model reads the custom
+  prompt so it scores distinctively; offline it uses a neutral profile (the app
+  says so). Built-ins are always on and can't be deleted.
+
 Everything stays **mock-first / offline**; the dev SQLite DB is disposable
 (re-seed with `scripts/seed_demo.py`). Deep-links: `#/run/:id`,
 `#/run/:id?sweep=1` (auto-run Population Sweep), `#/shared/:token`.

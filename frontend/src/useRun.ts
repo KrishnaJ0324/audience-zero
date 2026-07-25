@@ -203,6 +203,7 @@ export function useRun() {
       job: run.job,
       calibration: run.calibration_summary,
       manifest: run.run_manifest,
+      provider: run.run_manifest?.provider ?? "",
       beforeAfter: acceptedBA,
       producedAudio: run.produced_audio,
       episodeTitle: run.episode_title,
