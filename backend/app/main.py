@@ -1,7 +1,9 @@
-"""API Gateway (§2.3 component 10, §2.5 API surface).
+"""API Gateway — v2 producer workflow.
 
-FastAPI. REST for commands, SSE for progress/telemetry. The internal event bus
-decouples computation from the UI theatrics.
+FastAPI. REST for commands, SSE for progress/telemetry. Hierarchy:
+Project -> Episode -> Version -> AnalysisRun -> RevisionVariant. The event bus
+decouples computation from UI theatrics and replays history to late/reconnecting
+subscribers.
 """
 from __future__ import annotations
 
@@ -11,13 +13,15 @@ from pathlib import Path
 
 from fastapi import FastAPI, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import FileResponse, JSONResponse
+from fastapi.responses import FileResponse, JSONResponse, Response
 from pydantic import BaseModel
 from sse_starlette.sse import EventSourceResponse
 
 from .config import get_settings
 from .event_bus import bus
 from .pipeline import Pipeline
+from .providers import wavtools
+from .services import report_pdf, summary as summary_svc
 
 settings = get_settings()
 pipeline = Pipeline(settings=settings, bus=bus)
@@ -29,7 +33,7 @@ async def lifespan(app: FastAPI):
     yield
 
 
-app = FastAPI(title="Audience Zero", version="1.0.0", lifespan=lifespan)
+app = FastAPI(title="Audience Zero", version="2.0.0", lifespan=lifespan)
 app.add_middleware(
     CORSMiddleware,
     allow_origins=settings.cors_origins,
@@ -39,14 +43,20 @@ app.add_middleware(
 )
 
 
-# --------------------------------------------------------------------------- #
-# Requests
-# --------------------------------------------------------------------------- #
 class ScriptIn(BaseModel):
     title: str = "Untitled Episode"
     text: str
+    label: str = "v1"
 
 
+class ProjectIn(BaseModel):
+    name: str
+    description: str = ""
+
+
+# --------------------------------------------------------------------------- #
+# Meta
+# --------------------------------------------------------------------------- #
 @app.get("/health")
 async def health() -> dict:
     return {"status": "ok", "provider": pipeline.providers.kind, "version": app.version}
@@ -55,65 +65,153 @@ async def health() -> dict:
 @app.get("/personas")
 async def personas() -> list[dict]:
     return [
-        {
-            "id": p.id, "name": p.name, "archetype": p.archetype,
-            "model": p.model, "color": p.color, "audience_weight": p.audience_weight,
-        }
+        {"id": p.id, "name": p.name, "archetype": p.archetype, "model": p.model,
+         "color": p.color, "audience_weight": p.audience_weight}
         for p in pipeline.registry.load()
     ]
 
 
 @app.get("/scripts")
 async def list_scripts() -> list[dict]:
-    out = []
-    for path in sorted(settings.scripts_dir.glob("*.txt")):
-        out.append({"name": path.stem, "text": path.read_text(encoding="utf-8")})
-    return out
+    return [
+        {"name": path.stem, "text": path.read_text(encoding="utf-8")}
+        for path in sorted(settings.scripts_dir.glob("*.txt"))
+    ]
 
 
-# --- §2.5: POST /episodes -------------------------------------------------- #
-# FastAPI can't mix a JSON body model with Form/File on one route, so we branch
-# on content-type: multipart => audio upload; anything else => JSON script.
-@app.post("/episodes")
-async def create_episode(request: Request):
+# --------------------------------------------------------------------------- #
+# Projects
+# --------------------------------------------------------------------------- #
+@app.post("/projects")
+async def create_project(payload: ProjectIn):
+    p = await pipeline.create_project(payload.name, payload.description)
+    return p.model_dump()
+
+
+@app.get("/projects")
+async def list_projects():
+    return [p.model_dump() for p in await pipeline.store.list_projects()]
+
+
+@app.get("/projects/{project_id}")
+async def get_project(project_id: str):
+    p = await pipeline.store.get_project(project_id)
+    if not p:
+        raise HTTPException(404, "project not found")
+    episodes = await pipeline.store.list_episodes(project_id)
+    return {"project": p.model_dump(), "episodes": [e.model_dump() for e in episodes]}
+
+
+# --------------------------------------------------------------------------- #
+# Episodes + Versions
+# --------------------------------------------------------------------------- #
+async def _ingest(request: Request, project_id: str | None, episode_id: str | None,
+                  label: str = "v1", parent_version_id: str | None = None):
+    """Shared script(JSON)/audio(multipart) ingestion → a saved Version."""
     ctype = request.headers.get("content-type", "")
     if ctype.startswith("multipart/form-data"):
         form = await request.form()
         audio = form.get("audio")
         title = str(form.get("title") or "")
+        lbl = str(form.get("label") or label)
         if audio is None or not hasattr(audio, "read"):
             raise HTTPException(400, "multipart upload must include an 'audio' file")
         data = await audio.read()  # type: ignore[union-attr]
-        ep = await pipeline.ingest_audio(title or audio.filename, data, audio.filename)  # type: ignore[union-attr]
-        return ep.model_dump()
+        return await pipeline.add_audio_version(
+            title or audio.filename, data, audio.filename,  # type: ignore[union-attr]
+            project_id=project_id, episode_id=episode_id, label=lbl,
+            parent_version_id=parent_version_id)
     try:
         body = await request.json()
         payload = ScriptIn(**body)
     except Exception:
         raise HTTPException(400, "Provide JSON {title,text} or a multipart audio upload")
-    ep = await pipeline.ingest_script(payload.title, payload.text)
-    return ep.model_dump()
+    return await pipeline.add_script_version(
+        payload.title, payload.text, project_id=project_id, episode_id=episode_id,
+        label=payload.label or label, parent_version_id=parent_version_id)
 
 
-# --- §2.5: POST /episodes/{id}/panel (async) ------------------------------- #
-@app.post("/episodes/{episode_id}/panel")
-async def trigger_panel(episode_id: str, parent: str | None = None):
+@app.post("/projects/{project_id}/episodes")
+async def create_episode_in_project(project_id: str, request: Request):
+    project = await pipeline.store.get_project(project_id)
+    if not project:
+        raise HTTPException(404, "project not found")
+    episode = await pipeline.create_episode(project_id, "Untitled Episode")
+    version = await _ingest(request, project_id, episode.id, label="v1")
+    # name the episode after the version title
+    episode.title = version.title
+    await pipeline.store.save_episode(episode)
+    return {"episode": episode.model_dump(), "version": version.model_dump()}
+
+
+@app.get("/episodes/{episode_id}")
+async def get_episode(episode_id: str):
     episode = await pipeline.store.get_episode(episode_id)
     if not episode:
         raise HTTPException(404, "episode not found")
-    run_id = pipeline.new_run_id()
+    versions = await pipeline.store.list_versions(episode_id)
+    runs = await pipeline.store.list_runs_for_episode(episode_id)
+    return {
+        "episode": episode.model_dump(),
+        "versions": [v.model_dump() for v in versions],
+        "runs": [r.model_dump() for r in runs],
+    }
 
+
+@app.post("/episodes/{episode_id}/versions")
+async def add_version(episode_id: str, request: Request, label: str = "v", parent: str | None = None):
+    episode = await pipeline.store.get_episode(episode_id)
+    if not episode:
+        raise HTTPException(404, "episode not found")
+    version = await _ingest(request, episode.project_id, episode_id, label=label,
+                            parent_version_id=parent)
+    return version.model_dump()
+
+
+@app.get("/versions/{version_id}")
+async def get_version(version_id: str):
+    v = await pipeline.store.get_version(version_id)
+    if not v:
+        raise HTTPException(404, "version not found")
+    return v.model_dump()
+
+
+# Convenience: create an ad-hoc episode+version in the default workspace (the
+# quick "paste script and run" flow). Mirrors the old POST /episodes.
+@app.post("/episodes")
+async def quick_ingest(request: Request):
+    version = await _ingest(request, None, None)
+    return version.model_dump()
+
+
+# --------------------------------------------------------------------------- #
+# Analysis runs
+# --------------------------------------------------------------------------- #
+def _analyze_bg(version, run_id: str, parent: str | None):
     async def _bg():
         try:
-            await pipeline.run_panel(episode, run_id, parent_run_id=parent)
-        except Exception:  # noqa: BLE001 — surfaced via SSE error event
+            await pipeline.run_panel(version, run_id, parent_run_id=parent)
+        except Exception:  # noqa: BLE001 — surfaced via SSE error/job_state
             pass
-
     asyncio.create_task(_bg())
-    return {"run_id": run_id, "episode_id": episode_id}
 
 
-# --- §2.5: GET /runs/{id}/events (SSE) ------------------------------------- #
+@app.post("/versions/{version_id}/analyze")
+async def analyze_version(version_id: str, parent: str | None = None):
+    version = await pipeline.store.get_version(version_id)
+    if not version:
+        raise HTTPException(404, "version not found")
+    run_id = pipeline.new_run_id()
+    _analyze_bg(version, run_id, parent)
+    return {"run_id": run_id, "version_id": version_id}
+
+
+# Back-compat: analyze by (ad-hoc) version id via the old panel path.
+@app.post("/episodes/{version_id}/panel")
+async def trigger_panel(version_id: str, parent: str | None = None):
+    return await analyze_version(version_id, parent)
+
+
 @app.get("/runs/{run_id}/events")
 async def run_events(run_id: str, request: Request):
     async def gen():
@@ -134,7 +232,6 @@ async def run_events(run_id: str, request: Request):
     return EventSourceResponse(gen())
 
 
-# --- §2.5: GET /runs/{id} -------------------------------------------------- #
 @app.get("/runs/{run_id}")
 async def get_run(run_id: str):
     run = await pipeline.store.get_run(run_id)
@@ -148,15 +245,21 @@ async def list_runs(limit: int = 30):
     return [r.model_dump() for r in await pipeline.store.list_runs(limit)]
 
 
-@app.get("/episodes/{episode_id}")
-async def get_episode(episode_id: str):
-    ep = await pipeline.store.get_episode(episode_id)
-    if not ep:
-        raise HTTPException(404, "episode not found")
-    return ep.model_dump()
+@app.post("/runs/{run_id}/retry")
+async def retry_run(run_id: str):
+    run = await pipeline.store.get_run(run_id)
+    if not run:
+        raise HTTPException(404, "run not found")
+    version = await pipeline.store.get_version(run.version_id)
+    if not version:
+        raise HTTPException(400, "run has no analyzable version")
+    _analyze_bg(version, run_id, run.parent_run_id)
+    return {"run_id": run_id, "status": "queued"}
 
 
-# --- §2.5: POST /runs/{id}/revise ------------------------------------------ #
+# --------------------------------------------------------------------------- #
+# Revisions
+# --------------------------------------------------------------------------- #
 @app.post("/runs/{run_id}/revise")
 async def revise(run_id: str, target: str = "weakest"):
     run = await pipeline.store.get_run(run_id)
@@ -170,12 +273,34 @@ async def revise(run_id: str, target: str = "weakest"):
             await pipeline.revise_run(run_id, target=target)
         except Exception:  # noqa: BLE001
             pass
-
     asyncio.create_task(_bg())
     return {"run_id": run_id, "status": "revising", "target": target}
 
 
-# --- §2.10: POST /runs/{id}/sweep (Population Sweep, stretch) --------------- #
+class VariantStatusIn(BaseModel):
+    status: str
+    notes: str = ""
+
+
+@app.post("/runs/{run_id}/variants/{variant_id}/status")
+async def variant_status(run_id: str, variant_id: str, payload: VariantStatusIn):
+    if payload.status not in ("proposed", "accepted", "rejected"):
+        raise HTTPException(400, "invalid status")
+    run = await pipeline.set_variant_status(run_id, variant_id, payload.status, payload.notes)
+    return run.model_dump()
+
+
+@app.post("/runs/{run_id}/rerun")
+async def rerun(run_id: str, variant: str | None = None):
+    parent = await pipeline.store.get_run(run_id)
+    if not parent:
+        raise HTTPException(404, "run not found")
+    if not parent.revision_variants:
+        raise HTTPException(400, "revise the run before re-running")
+    child, cmp = await pipeline.rerun_with_fix(run_id, variant_id=variant)
+    return {"child_run_id": child.id, "before_after": cmp.model_dump(), "run": child.model_dump()}
+
+
 @app.post("/runs/{run_id}/sweep")
 async def population_sweep(run_id: str, n: int = 200):
     n = max(24, min(n, 1000))
@@ -183,25 +308,96 @@ async def population_sweep(run_id: str, n: int = 200):
     return sweep.model_dump()
 
 
-# --- re-run (before/after) ------------------------------------------------- #
-@app.post("/runs/{run_id}/rerun")
-async def rerun(run_id: str):
-    parent = await pipeline.store.get_run(run_id)
-    if not parent:
+# --------------------------------------------------------------------------- #
+# Diagnostics collaboration
+# --------------------------------------------------------------------------- #
+class CommentIn(BaseModel):
+    author: str = "producer"
+    body: str
+
+
+class AssignIn(BaseModel):
+    assignee: str | None = None
+
+
+class DiagStatusIn(BaseModel):
+    status: str
+
+
+@app.post("/runs/{run_id}/diagnostics/{diag_id}/comment")
+async def add_comment(run_id: str, diag_id: str, payload: CommentIn):
+    run = await pipeline.add_comment(run_id, diag_id, payload.author, payload.body)
+    return run.model_dump()
+
+
+@app.post("/runs/{run_id}/diagnostics/{diag_id}/assign")
+async def assign_diag(run_id: str, diag_id: str, payload: AssignIn):
+    run = await pipeline.assign_diagnostic(run_id, diag_id, payload.assignee)
+    return run.model_dump()
+
+
+@app.post("/runs/{run_id}/diagnostics/{diag_id}/status")
+async def diag_status(run_id: str, diag_id: str, payload: DiagStatusIn):
+    if payload.status not in ("open", "resolved", "dismissed"):
+        raise HTTPException(400, "invalid status")
+    run = await pipeline.set_diagnostic_status(run_id, diag_id, payload.status)
+    return run.model_dump()
+
+
+# --------------------------------------------------------------------------- #
+# Share / export / summary
+# --------------------------------------------------------------------------- #
+@app.post("/runs/{run_id}/share")
+async def create_share(run_id: str):
+    token = await pipeline.create_share(run_id)
+    return {"token": token, "path": f"/shared/{token}"}
+
+
+@app.get("/shared/{token}")
+async def get_shared(token: str):
+    run = await pipeline.get_shared_run(token)
+    if not run:
+        raise HTTPException(404, "shared report not found")
+    return {"read_only": True, "run": run.model_dump(),
+            "summary": summary_svc.producer_summary(run)}
+
+
+@app.get("/runs/{run_id}/summary")
+async def run_summary(run_id: str):
+    run = await pipeline.store.get_run(run_id)
+    if not run:
         raise HTTPException(404, "run not found")
-    if not parent.revised_scene:
-        raise HTTPException(400, "revise the run before re-running")
-    child, cmp = await pipeline.rerun_with_fix(run_id)
-    return {"child_run_id": child.id, "before_after": cmp.model_dump(), "run": child.model_dump()}
+    return {"summary": summary_svc.producer_summary(run)}
 
 
-# --- audio static ---------------------------------------------------------- #
+@app.get("/runs/{run_id}/report.pdf")
+async def run_report_pdf(run_id: str):
+    run = await pipeline.store.get_run(run_id)
+    if not run:
+        raise HTTPException(404, "run not found")
+    pdf = report_pdf.build_pdf(run, summary_svc.producer_summary(run))
+    fname = f"audience-zero-{run_id}.pdf"
+    return Response(content=pdf, media_type="application/pdf",
+                    headers={"Content-Disposition": f'inline; filename="{fname}"'})
+
+
+# --------------------------------------------------------------------------- #
+# Audio + waveform
+# --------------------------------------------------------------------------- #
 @app.get("/audio/{filename}")
 async def get_audio(filename: str):
     path = settings.audio_dir / Path(filename).name
     if not path.exists():
         raise HTTPException(404, "audio not found")
     return FileResponse(path, media_type="audio/wav")
+
+
+@app.get("/audio/{filename}/peaks")
+async def audio_peaks(filename: str, buckets: int = 400):
+    path = settings.audio_dir / Path(filename).name
+    if not path.exists():
+        raise HTTPException(404, "audio not found")
+    return {"peaks": wavtools.peaks(str(path), max(16, min(buckets, 2000)))}
 
 
 @app.exception_handler(ValueError)

@@ -80,6 +80,36 @@ persona says, out loud, *"Too much recap — I'd skip here."*
 
 ---
 
+## Producer workflow (v2)
+
+The app is now a full producer workflow, not just a single-run tool. It is built
+on a **frozen `AnalysisRun` contract** — `verdict + confidence · evidence_spans[]
+· diagnostics[] · revision_variants[] · run_manifest · calibration_summary` —
+with a **Project → Episode → Version → AnalysisRun → RevisionVariant** hierarchy.
+
+A producer can:
+- **Navigate** projects → episodes → versions → runs (`#/`, `#/project/:id`,
+  `#/episode/:id`, `#/run/:id`), with full history that survives restarts.
+- **Inspect a drop with evidence** — the Evidence Timeline shows a beat-time
+  ruler, evidence ticks, persona filters, issue chips, and a transcript that
+  highlights the exact spans (recap phrases, crowded casts, weak hooks) that
+  triggered each drop, mapped to playback time (click-to-seek for audio versions).
+- **See how trustworthy it is** — panel confidence, agreement, and a
+  disagreement band drawn under the curve.
+- **Choose a revision** — the Revision Lab compares the original beat against
+  proposed variants, accept/reject with notes, and re-run to see the lift.
+- **Collaborate** — comment on, assign, and resolve diagnostics.
+- **Share a report** — an unguessable read-only link (`#/shared/:token`), a
+  one-paragraph producer summary, and a **PDF export**.
+- **Job UX** — queued/running/failed/complete with reconnectable SSE, a retry
+  button, and a fallback notice when personas degrade to the deterministic scorer.
+- **AI-audio disclosure** — every generated clip carries an AI-generated /
+  voice-consent badge.
+
+Everything stays **mock-first / offline**; the dev SQLite DB is disposable
+(re-seed with `scripts/seed_demo.py`). Deep-links: `#/run/:id`,
+`#/run/:id?sweep=1` (auto-run Population Sweep), `#/shared/:token`.
+
 ## Architecture
 
 Maps 1:1 to the system design. Contracts over coupling; personas are data, not

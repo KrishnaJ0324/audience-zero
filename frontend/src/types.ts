@@ -1,3 +1,4 @@
+// ---- content ----
 export interface Beat {
   index: number;
   start_s: number;
@@ -6,15 +7,37 @@ export interface Beat {
   text: string;
 }
 
-export interface Episode {
+export interface Version {
   id: string;
   title: string;
   source_type: "script" | "audio";
   transcript: string;
   duration_s: number | null;
   beats: Beat[];
+  project_id: string;
+  episode_id: string;
+  label: string;
+  parent_version_id: string | null;
+  created_at: string;
+}
+// alias — the live SSE state still calls the analyzed content "episode"
+export type Episode = Version;
+
+export interface Project {
+  id: string;
+  name: string;
+  description: string;
+  created_at: string;
 }
 
+export interface EpisodeMeta {
+  id: string;
+  project_id: string;
+  title: string;
+  created_at: string;
+}
+
+// ---- personas ----
 export interface Persona {
   id: string;
   name: string;
@@ -58,6 +81,53 @@ export interface PanelVerdict {
   final_hook_score: number;
 }
 
+// ---- confidence ----
+export interface Confidence {
+  overall: number;
+  panel_agreement: number;
+  mean_persona_confidence: number;
+  disagreement_curve: number[];
+  label: "low" | "moderate" | "high";
+}
+
+// ---- evidence + diagnostics ----
+export type EvidenceKind =
+  | "recap" | "crowded" | "no_hook" | "trope" | "boredom" | "hook" | "payoff";
+
+export interface EvidenceSpan {
+  id: string;
+  beat_index: number;
+  kind: EvidenceKind;
+  start_s: number | null;
+  end_s: number | null;
+  char_start: number;
+  char_end: number;
+  quote: string;
+  persona_ids: string[];
+  source: "heuristic" | "model";
+}
+
+export interface Comment {
+  id: string;
+  author: string;
+  body: string;
+  created_at: string;
+}
+
+export interface Diagnostic {
+  id: string;
+  beat_index: number;
+  type: string;
+  severity: "info" | "minor" | "major" | "critical";
+  summary: string;
+  persona_ids: string[];
+  evidence_span_ids: string[];
+  status: "open" | "resolved" | "dismissed";
+  assignee: string | null;
+  comments: Comment[];
+}
+
+// ---- revision + audio ----
 export interface RevisedScene {
   beat_index: number;
   new_text: string;
@@ -73,18 +143,90 @@ export interface ProducedAudio {
   has_music: boolean;
 }
 
-export interface PanelRun {
+export interface AudioDisclosure {
+  ai_generated: boolean;
+  voice_consent:
+    | "synthetic_no_consent_needed" | "consented" | "pending" | "unknown";
+  note: string;
+}
+
+export interface RevisionVariant {
   id: string;
-  episode_id: string;
-  status: "pending" | "running" | "complete" | "failed";
-  verdict: PanelVerdict | null;
-  reports: PersonaReport[];
-  revised_scene: RevisedScene | null;
+  target: "weakest" | "ending" | "custom";
+  beat_index: number;
+  new_text: string;
+  change_rationale: string;
+  casting: Record<string, string>;
   produced_audio: ProducedAudio | null;
+  before_after: BeforeAfter | null;
+  status: "proposed" | "accepted" | "rejected";
+  notes: string;
+  rerun_id: string | null;
+  disclosure: AudioDisclosure;
+  created_at: string;
+}
+
+// ---- reproducibility + calibration ----
+export interface RunManifest {
+  run_id: string;
+  provider: string;
+  models: Record<string, string>;
+  persona_ids: string[];
+  reveal_delay_s: number;
+  seed_signature: string;
+  engine_version: string;
+  started_at: string;
+  finished_at: string | null;
+  duration_s: number | null;
+  cost_estimate_usd: number | null;
+}
+
+export interface CalibrationSummary {
+  state: "uncalibrated" | "calibrated";
+  has_actual: boolean;
+  predicted_retention: number[] | null;
+  actual_retention: number[] | null;
+  mae: number | null;
+  correlation: number | null;
+  per_persona_calibration: Record<string, number>;
+}
+
+// ---- job ----
+export interface JobState {
+  status: "queued" | "running" | "failed" | "complete";
+  stage: string;
+  progress: number;
+  attempts: number;
+  max_attempts: number;
+  error: string | null;
+  updated_at: string;
+}
+
+// ---- run aggregate ----
+export interface AnalysisRun {
+  id: string;
+  project_id: string;
+  episode_id: string;
+  version_id: string;
   parent_run_id: string | null;
   created_at: string;
+  job: JobState;
+  status: "pending" | "running" | "complete" | "failed";
+  verdict: PanelVerdict | null;
+  confidence: Confidence | null;
+  reports: PersonaReport[];
+  evidence_spans: EvidenceSpan[];
+  diagnostics: Diagnostic[];
+  revision_variants: RevisionVariant[];
+  run_manifest: RunManifest | null;
+  calibration_summary: CalibrationSummary | null;
+  revised_scene: RevisedScene | null;
+  produced_audio: ProducedAudio | null;
+  revision_target: "weakest" | "ending";
   episode_title: string;
+  version_label: string;
 }
+export type PanelRun = AnalysisRun;
 
 export interface BeforeAfter {
   before_run_id: string;
@@ -113,19 +255,10 @@ export interface PopulationSweep {
 }
 
 export type EventType =
-  | "run_started"
-  | "beats_ready"
-  | "agent_started"
-  | "beat_scored"
-  | "agent_done"
-  | "agent_failed"
-  | "verdict_ready"
-  | "revision_started"
-  | "revision_ready"
-  | "audio_ready"
-  | "run_complete"
-  | "error"
-  | "ping";
+  | "run_started" | "job_state" | "beats_ready" | "agent_started" | "beat_scored"
+  | "agent_done" | "agent_failed" | "verdict_ready" | "evidence_ready"
+  | "revision_started" | "variant_added" | "variant_updated" | "revision_ready"
+  | "audio_ready" | "run_complete" | "error" | "ping";
 
 export interface BusEvent<T = any> {
   type: EventType;

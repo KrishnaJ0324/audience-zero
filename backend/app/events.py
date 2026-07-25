@@ -10,13 +10,17 @@ from pydantic import BaseModel, Field
 
 EventType = Literal[
     "run_started",
+    "job_state",
     "beats_ready",
     "agent_started",
     "beat_scored",
     "agent_done",
     "agent_failed",
     "verdict_ready",
+    "evidence_ready",
     "revision_started",
+    "variant_added",
+    "variant_updated",
     "revision_ready",
     "audio_ready",
     "run_complete",

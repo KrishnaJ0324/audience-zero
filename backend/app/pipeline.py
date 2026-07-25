@@ -1,30 +1,50 @@
-"""Coordinator that wires the services into the golden path.
+"""Coordinator that wires the services into the producer workflow.
 
 Kept separate from the HTTP layer so it can be driven from tests, the seed
-script, or the API identically.
+script, or the API identically. Builds the frozen AnalysisRun payload.
 """
 from __future__ import annotations
 
 import asyncio
 import datetime as _dt
+import hashlib
+import json
+import secrets
 import uuid
 
 from .config import Settings, get_settings
-from .contracts import BeforeAfter, Episode, PanelRun
+from .contracts import (
+    AnalysisRun,
+    BeforeAfter,
+    CalibrationSummary,
+    Comment,
+    EpisodeMeta,
+    JobState,
+    Project,
+    RevisionVariant,
+    RunManifest,
+    Version,
+)
 from .event_bus import EventBus, bus as default_bus
 from .events import Event
 from .providers.factory import Providers, build_providers
+from .services import analysis, evidence, population_sweep, verdict_engine
 from .services.audio_production import AudioProductionService
 from .services.ingestion import IngestionService
 from .services.orchestrator import PanelOrchestrator
 from .services.persona_registry import PersonaRegistry
 from .services.revision import RevisionService
 from .services.session_store import SessionStore
-from .services import population_sweep, verdict_engine
+
+_DEFAULT_PROJECT_ID = "proj_default"
 
 
 def _now() -> str:
     return _dt.datetime.now(_dt.timezone.utc).isoformat()
+
+
+def _sid(prefix: str) -> str:
+    return f"{prefix}_{uuid.uuid4().hex[:10]}"
 
 
 class Pipeline:
@@ -48,40 +68,129 @@ class Pipeline:
         await self.store.init()
         self.registry.load()
 
-    # --- ingest ---------------------------------------------------------
-    async def ingest_script(self, title: str, text: str) -> Episode:
-        ep = await self.ingestion.ingest_script(title, text)
-        await self.store.save_episode(ep)
-        return ep
+    # ------------------------------------------------------------------ #
+    # Hierarchy: Project -> Episode -> Version
+    # ------------------------------------------------------------------ #
+    async def create_project(self, name: str, description: str = "") -> Project:
+        p = Project(id=_sid("proj"), name=name or "Untitled Project", description=description)
+        await self.store.save_project(p)
+        return p
 
-    async def ingest_audio(self, title: str, data: bytes, filename: str) -> Episode:
-        ep = await self.ingestion.ingest_audio(title, data, filename)
-        await self.store.save_episode(ep)
-        return ep
+    async def _ensure_default_project(self) -> str:
+        existing = await self.store.get_project(_DEFAULT_PROJECT_ID)
+        if not existing:
+            await self.store.save_project(
+                Project(id=_DEFAULT_PROJECT_ID, name="Workspace",
+                        description="Default workspace for ad-hoc analyses.")
+            )
+        return _DEFAULT_PROJECT_ID
 
-    # --- panel ----------------------------------------------------------
+    async def create_episode(self, project_id: str, title: str) -> EpisodeMeta:
+        e = EpisodeMeta(id=_sid("ep"), project_id=project_id, title=title or "Untitled Episode")
+        await self.store.save_episode(e)
+        return e
+
+    async def add_script_version(
+        self, title: str, text: str,
+        project_id: str | None = None, episode_id: str | None = None,
+        label: str = "v1", parent_version_id: str | None = None,
+    ) -> Version:
+        version = await self.ingestion.ingest_script(title, text)
+        return await self._attach_and_save(version, project_id, episode_id, label, parent_version_id)
+
+    async def add_audio_version(
+        self, title: str, data: bytes, filename: str,
+        project_id: str | None = None, episode_id: str | None = None,
+        label: str = "v1", parent_version_id: str | None = None,
+    ) -> Version:
+        version = await self.ingestion.ingest_audio(title, data, filename)
+        return await self._attach_and_save(version, project_id, episode_id, label, parent_version_id)
+
+    async def _attach_and_save(
+        self, version: Version, project_id: str | None, episode_id: str | None,
+        label: str, parent_version_id: str | None,
+    ) -> Version:
+        pid = project_id or await self._ensure_default_project()
+        eid = episode_id or (await self.create_episode(pid, version.title)).id
+        version.project_id = pid
+        version.episode_id = eid
+        version.label = label
+        version.parent_version_id = parent_version_id
+        await self.store.save_version(version)
+        return version
+
+    # Back-compat helpers used by tests/seed: create a fresh episode + version.
+    async def ingest_script(self, title: str, text: str) -> Version:
+        return await self.add_script_version(title, text)
+
+    async def ingest_audio(self, title: str, data: bytes, filename: str) -> Version:
+        return await self.add_audio_version(title, data, filename)
+
+    # ------------------------------------------------------------------ #
+    # Analysis run
+    # ------------------------------------------------------------------ #
     def new_run_id(self) -> str:
-        return f"run_{uuid.uuid4().hex[:10]}"
+        return _sid("run")
+
+    def _manifest(self, run_id: str, version: Version, personas, started: str) -> RunManifest:
+        sig_src = version.transcript + "||" + "|".join(
+            f"{p.id}:{p.model}:{json.dumps(p.weights, sort_keys=True)}" for p in personas
+        ) + "||" + self.providers.kind
+        seed = hashlib.sha256(sig_src.encode()).hexdigest()[:16]
+        models = {
+            "segmenter": self.s.segmenter_model,
+            "revision": self.s.revision_model,
+            "tts": self.s.tts_model,
+            **{p.id: p.model for p in personas},
+        }
+        from . import __version__
+        return RunManifest(
+            run_id=run_id, provider=self.providers.kind, models=models,
+            persona_ids=[p.id for p in personas], reveal_delay_s=self.s.reveal_delay_s,
+            seed_signature=seed, engine_version=__version__, started_at=started,
+        )
+
+    async def _emit_job(self, run: AnalysisRun) -> None:
+        run.job.updated_at = _now()
+        run.status = {"complete": "complete", "failed": "failed", "running": "running",
+                      "queued": "pending"}[run.job.status]
+        await self.bus.publish(Event(type="job_state", run_id=run.id,
+                                     data={"job": run.job.model_dump(), "status": run.status}))
 
     async def run_panel(
-        self, episode: Episode, run_id: str, parent_run_id: str | None = None,
+        self, version: Version, run_id: str, parent_run_id: str | None = None,
         speak_verdicts: int = 2,
-    ) -> PanelRun:
+    ) -> AnalysisRun:
         personas = self.registry.load()
-        run = PanelRun(
-            id=run_id, episode_id=episode.id, status="running",
-            parent_run_id=parent_run_id, created_at=_now(), episode_title=episode.title,
+        started = _now()
+        run = AnalysisRun(
+            id=run_id, project_id=version.project_id, episode_id=version.episode_id,
+            version_id=version.id, parent_run_id=parent_run_id, created_at=started,
+            episode_title=version.title, version_label=version.label,
+            job=JobState(status="running", stage="scoring", progress=0.1, attempts=1),
+            run_manifest=self._manifest(run_id, version, personas, started),
         )
         await self.store.save_run(run)
         await self.bus.publish(Event(type="run_started", run_id=run_id, data={
-            "episode_id": episode.id, "title": episode.title,
-            "provider": self.providers.kind, "parent_run_id": parent_run_id,
+            "episode_id": version.episode_id, "version_id": version.id,
+            "title": version.title, "provider": self.providers.kind,
+            "parent_run_id": parent_run_id,
         }))
+        await self._emit_job(run)
         try:
-            reports = await self.orchestrator.run_panel(run_id, episode, episode.beats, personas)
-            verdict = verdict_engine.judge(reports, personas, len(episode.beats))
+            reports = await self.orchestrator.run_panel(run_id, version, version.beats, personas)
 
-            # render the loudest N verdicts to speech (cast voices)
+            run.job.stage = "verdict"; run.job.progress = 0.7
+            await self._emit_job(run)
+            verdict = verdict_engine.judge(reports, personas, len(version.beats))
+            conf = analysis.confidence(reports, len(version.beats), len(personas))
+            spans, diagnostics = evidence.spans_and_diagnostics(version, reports, verdict, personas)
+            actual = await self.store.get_actual(version.episode_id)
+            calibration = analysis.calibrate(verdict.retention_curve, actual)
+
+            # spoken verdicts (cast voices) — the 'producing' stage
+            run.job.stage = "producing"; run.job.progress = 0.85
+            await self._emit_job(run)
             pmap = {p.id: p for p in personas}
             ranked = sorted(reports, key=lambda r: (r.skip_at_beat is None, -r.confidence))
             for r in ranked[: max(0, speak_verdicts)]:
@@ -91,32 +200,59 @@ class Pipeline:
 
             run.reports = reports
             run.verdict = verdict
-            run.status = "complete"
+            run.confidence = conf
+            run.evidence_spans = spans
+            run.diagnostics = diagnostics
+            run.calibration_summary = calibration
+            run.run_manifest.finished_at = _now()
+            run.run_manifest.duration_s = round(
+                (_dt.datetime.fromisoformat(run.run_manifest.finished_at)
+                 - _dt.datetime.fromisoformat(started)).total_seconds(), 2)
+            run.job = JobState(status="complete", stage="done", progress=1.0, attempts=run.job.attempts)
             await self.store.save_run(run)
+
             await self.bus.publish(Event(type="verdict_ready", run_id=run_id,
-                                         data={"verdict": verdict.model_dump()}))
+                                         data={"verdict": verdict.model_dump(),
+                                               "confidence": conf.model_dump()}))
+            await self.bus.publish(Event(type="evidence_ready", run_id=run_id, data={
+                "evidence_spans": [s.model_dump() for s in spans],
+                "diagnostics": [d.model_dump() for d in diagnostics],
+            }))
+            await self._emit_job(run)
             await self.bus.publish(Event(type="run_complete", run_id=run_id,
                                          data={"run": run.model_dump()}))
             return run
         except Exception as exc:  # noqa: BLE001
-            run.status = "failed"
+            run.job = JobState(status="failed", stage=run.job.stage, error=str(exc)[:300],
+                               attempts=run.job.attempts)
             await self.store.save_run(run)
+            await self._emit_job(run)
             await self.bus.publish(Event(type="error", run_id=run_id, data={"error": str(exc)}))
             raise
 
-    # --- revise (fix weakest beat, or strengthen the ending) -----------
-    async def revise_run(self, run_id: str, target: str = "weakest") -> PanelRun:
+    async def retry_run(self, run_id: str) -> str:
+        """Re-enqueue a failed run's analysis on the same version."""
+        run = await self.store.get_run(run_id)
+        if not run:
+            raise ValueError("run not found")
+        version = await self.store.get_version(run.version_id)
+        if not version:
+            raise ValueError("version not found")
+        await self.run_panel(version, run_id, parent_run_id=run.parent_run_id)
+        return run_id
+
+    # ------------------------------------------------------------------ #
+    # Revision variants
+    # ------------------------------------------------------------------ #
+    async def revise_run(self, run_id: str, target: str = "weakest") -> AnalysisRun:
         run = await self.store.get_run(run_id)
         if not run or not run.verdict:
             raise ValueError("run not found or has no verdict")
-        episode = await self.store.get_episode(run.episode_id)
-        if not episode:
-            raise ValueError("episode not found")
-        if target == "ending":
-            target_beat = len(episode.beats) - 1
-        else:
-            target_beat = run.verdict.weakest_beat
-        beat = next((b for b in episode.beats if b.index == target_beat), episode.beats[0])
+        version = await self.store.get_version(run.version_id)
+        if not version:
+            raise ValueError("version not found")
+        target_beat = (len(version.beats) - 1) if target == "ending" else run.verdict.weakest_beat
+        beat = next((b for b in version.beats if b.index == target_beat), version.beats[0])
 
         await self.bus.publish(Event(type="revision_started", run_id=run_id,
                                      data={"beat_index": target_beat, "target": target}))
@@ -125,54 +261,152 @@ class Pipeline:
         voice_map = {p.name.upper(): p.voice_id for p in personas}
         produced = await self.audio.produce_scene(scene, voice_map)
 
+        variant = RevisionVariant(
+            id=_sid("var"), target=target, beat_index=target_beat,  # type: ignore[arg-type]
+            new_text=scene.new_text, change_rationale=scene.change_rationale,
+            casting=scene.casting, produced_audio=produced, status="proposed",
+        )
+        run.revision_variants.append(variant)
+        # legacy mirrors (kept until the FE migrates to revision_variants)
         run.revised_scene = scene
         run.produced_audio = produced
         run.revision_target = target  # type: ignore[assignment]
         await self.store.save_run(run)
+
+        await self.bus.publish(Event(type="variant_added", run_id=run_id,
+                                     data={"variant": variant.model_dump()}))
         await self.bus.publish(Event(type="revision_ready", run_id=run_id,
                                      data={"scene": scene.model_dump()}))
         await self.bus.publish(Event(type="audio_ready", run_id=run_id,
                                      data={"produced_audio": produced.model_dump()}))
         return run
 
-    # --- population sweep (stretch) ------------------------------------
-    async def population_sweep(self, run_id: str, n: int = 200):
+    async def set_variant_status(self, run_id: str, variant_id: str, status: str, notes: str = "") -> AnalysisRun:
         run = await self.store.get_run(run_id)
         if not run:
             raise ValueError("run not found")
-        episode = await self.store.get_episode(run.episode_id)
-        if not episode:
-            raise ValueError("episode not found")
-        personas = self.registry.load()
-        return population_sweep.sweep(episode, personas, n=n)
+        for v in run.revision_variants:
+            if v.id == variant_id:
+                v.status = status  # type: ignore[assignment]
+                if notes:
+                    v.notes = notes
+            elif status == "accepted":
+                # only one accepted variant at a time
+                if v.status == "accepted":
+                    v.status = "proposed"
+        await self.store.save_run(run)
+        await self.bus.publish(Event(type="variant_updated", run_id=run_id,
+                                     data={"variant_id": variant_id, "status": status}))
+        return run
 
-    # --- re-run for before/after ---------------------------------------
-    async def rerun_with_fix(self, parent_run_id: str) -> tuple[PanelRun, BeforeAfter]:
+    # ------------------------------------------------------------------ #
+    # Re-run with a fix (before/after)
+    # ------------------------------------------------------------------ #
+    async def rerun_with_fix(self, parent_run_id: str, variant_id: str | None = None) -> tuple[AnalysisRun, BeforeAfter]:
         parent = await self.store.get_run(parent_run_id)
-        if not parent or not parent.verdict or not parent.revised_scene:
+        if not parent or not parent.verdict or not parent.revision_variants:
             raise ValueError("parent run must be revised before re-run")
-        episode = await self.store.get_episode(parent.episode_id)
-        if not episode:
-            raise ValueError("episode not found")
+        variant = next((v for v in parent.revision_variants if v.id == variant_id), None) \
+            or next((v for v in parent.revision_variants if v.status == "accepted"), None) \
+            or parent.revision_variants[-1]
 
-        # build a patched episode: swap the REVISED beat's text for the rewrite
-        # (weakest beat for a normal fix, final beat for an ending fix).
-        patched = episode.model_copy(deep=True)
-        wi = parent.revised_scene.beat_index
+        version = await self.store.get_version(parent.version_id)
+        if not version:
+            raise ValueError("version not found")
+
+        # new Version = parent version with the revised beat swapped in
+        patched = version.model_copy(deep=True)
+        wi = variant.beat_index
         for b in patched.beats:
             if b.index == wi:
-                b.text = parent.revised_scene.new_text
+                b.text = variant.new_text
                 b.summary = "(revised) " + b.summary
-        patched.id = f"{episode.id}_rev{uuid.uuid4().hex[:4]}"
-        patched.title = episode.title + " (revised)"
-        await self.store.save_episode(patched)
+        patched.id = _sid("ver")
+        patched.parent_version_id = version.id
+        patched.label = f"{version.label}+fix-b{wi + 1}"
+        patched.title = version.title
+        await self.store.save_version(patched)
 
         child_id = self.new_run_id()
         child = await self.run_panel(patched, child_id, parent_run_id=parent_run_id)
         cmp = verdict_engine.before_after(
             parent.verdict, child.verdict, parent_run_id, child_id, wi,
-            target=parent.revision_target,
+            target=variant.target if variant.target in ("weakest", "ending") else "weakest",
         )
+        # link the variant to its re-run
+        variant.rerun_id = child_id
+        variant.before_after = cmp
+        await self.store.save_run(parent)
         await self.bus.publish(Event(type="run_complete", run_id=child_id,
                                      data={"before_after": cmp.model_dump()}))
         return child, cmp
+
+    # ------------------------------------------------------------------ #
+    # Calibration + sweep
+    # ------------------------------------------------------------------ #
+    async def attach_actual(self, episode_id: str, retention: list[float]) -> None:
+        await self.store.save_actual(episode_id, retention)
+
+    async def recalibrate_run(self, run_id: str) -> CalibrationSummary:
+        run = await self.store.get_run(run_id)
+        if not run or not run.verdict:
+            raise ValueError("run not found")
+        actual = await self.store.get_actual(run.episode_id)
+        cal = analysis.calibrate(run.verdict.retention_curve, actual)
+        run.calibration_summary = cal
+        await self.store.save_run(run)
+        return cal
+
+    # ------------------------------------------------------------------ #
+    # Diagnostics collaboration
+    # ------------------------------------------------------------------ #
+    async def _mutate_diagnostic(self, run_id: str, diag_id: str, fn) -> AnalysisRun:
+        run = await self.store.get_run(run_id)
+        if not run:
+            raise ValueError("run not found")
+        diag = next((d for d in run.diagnostics if d.id == diag_id), None)
+        if not diag:
+            raise ValueError("diagnostic not found")
+        fn(diag)
+        await self.store.save_run(run)
+        await self.bus.publish(Event(type="variant_updated", run_id=run_id,
+                                     data={"diagnostic_id": diag_id}))
+        return run
+
+    async def add_comment(self, run_id: str, diag_id: str, author: str, body: str) -> AnalysisRun:
+        return await self._mutate_diagnostic(
+            run_id, diag_id,
+            lambda d: d.comments.append(Comment(id=_sid("cm"), author=author or "producer", body=body)))
+
+    async def assign_diagnostic(self, run_id: str, diag_id: str, assignee: str | None) -> AnalysisRun:
+        return await self._mutate_diagnostic(run_id, diag_id, lambda d: setattr(d, "assignee", assignee or None))
+
+    async def set_diagnostic_status(self, run_id: str, diag_id: str, status: str) -> AnalysisRun:
+        return await self._mutate_diagnostic(run_id, diag_id, lambda d: setattr(d, "status", status))
+
+    # ------------------------------------------------------------------ #
+    # Sharing (read-only tokens)
+    # ------------------------------------------------------------------ #
+    async def create_share(self, run_id: str) -> str:
+        run = await self.store.get_run(run_id)
+        if not run:
+            raise ValueError("run not found")
+        token = secrets.token_urlsafe(12)
+        await self.store.save_share(token, run_id, _now())
+        return token
+
+    async def get_shared_run(self, token: str) -> AnalysisRun | None:
+        run_id = await self.store.get_share(token)
+        if not run_id:
+            return None
+        return await self.store.get_run(run_id)
+
+    async def population_sweep(self, run_id: str, n: int = 200):
+        run = await self.store.get_run(run_id)
+        if not run:
+            raise ValueError("run not found")
+        version = await self.store.get_version(run.version_id)
+        if not version:
+            raise ValueError("version not found")
+        personas = self.registry.load()
+        return population_sweep.sweep(version, personas, n=n)

@@ -5,9 +5,10 @@ interface Props {
   onRun: (title: string, text: string) => void;
   onRunAudio: (title: string, file: File) => void;
   busy: boolean;
+  heading?: string;
 }
 
-export function ScriptInput({ onRun, onRunAudio, busy }: Props) {
+export function ScriptInput({ onRun, onRunAudio, busy, heading = "Input" }: Props) {
   const [title, setTitle] = useState("Untitled Episode");
   const [text, setText] = useState("");
   const [samples, setSamples] = useState<{ name: string; text: string }[]>([]);
@@ -24,7 +25,7 @@ export function ScriptInput({ onRun, onRunAudio, busy }: Props) {
 
   return (
     <div className="card">
-      <h2 data-idx="01">Input</h2>
+      <h2 data-idx="01">{heading}</h2>
       <label className="field-label">Episode title</label>
       <input
         type="text"

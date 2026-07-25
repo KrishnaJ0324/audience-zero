@@ -6,11 +6,13 @@ export function VerdictPanel({
   onFix,
   onStrengthenEnding,
   fixing,
+  showActions = true,
 }: {
   state: LiveState;
-  onFix: () => void;
-  onStrengthenEnding: () => void;
-  fixing: boolean;
+  onFix?: () => void;
+  onStrengthenEnding?: () => void;
+  fixing?: boolean;
+  showActions?: boolean;
 }) {
   const v = state.verdict;
   if (!v) return null;
@@ -70,14 +72,16 @@ export function VerdictPanel({
         </div>
       )}
 
-      <div className="row" style={{ marginTop: 16 }}>
-        <button className="danger" onClick={onFix} disabled={fixing}>
-          {fixing ? "Rewriting scene + producing audio…" : `✦ Fix beat ${v.weakest_beat + 1}`}
-        </button>
-        <button className="ghost" onClick={onStrengthenEnding} disabled={fixing} title="Rewrite the final beat to raise Binge Probability">
-          ⤴ Strengthen ending
-        </button>
-      </div>
+      {showActions && (
+        <div className="row" style={{ marginTop: 16 }}>
+          <button className="danger" onClick={onFix} disabled={fixing}>
+            {fixing ? "Rewriting scene + producing audio…" : `✦ Fix beat ${v.weakest_beat + 1}`}
+          </button>
+          <button className="ghost" onClick={onStrengthenEnding} disabled={fixing} title="Rewrite the final beat to raise Binge Probability">
+            ⤴ Strengthen ending
+          </button>
+        </div>
+      )}
     </div>
   );
 }

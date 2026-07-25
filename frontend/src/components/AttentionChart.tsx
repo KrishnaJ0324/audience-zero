@@ -1,8 +1,9 @@
 import { useMemo, useState } from "react";
 import {
+  Area,
   CartesianGrid,
+  ComposedChart,
   Line,
-  LineChart,
   ReferenceDot,
   ReferenceLine,
   ResponsiveContainer,
@@ -39,6 +40,8 @@ export function AttentionChart({ state, showAggregate = true }: Props) {
       if (showAggregate && verdict?.aggregate_curve?.[b.index] !== undefined) {
         row.__aggregate = Math.round(verdict.aggregate_curve[b.index]);
       }
+      const dis = state.confidence?.disagreement_curve?.[b.index];
+      if (dis !== undefined) row.__disagreement = Math.round(dis);
       return row;
     });
   }, [beats, personas, scores, verdict, showAggregate]);
@@ -52,8 +55,16 @@ export function AttentionChart({ state, showAggregate = true }: Props) {
     <div>
       <div className="chart-wrap">
         <ResponsiveContainer width="100%" height="100%">
-          <LineChart data={data} margin={{ top: 12, right: 16, bottom: 0, left: -18 }}>
+          <ComposedChart data={data} margin={{ top: 12, right: 16, bottom: 0, left: -18 }}>
             <CartesianGrid stroke="var(--grid)" vertical={false} />
+            {showAggregate && (
+              <defs>
+                <linearGradient id="disBand" x1="0" y1="0" x2="0" y2="1">
+                  <stop offset="0%" stopColor="var(--danger)" stopOpacity={0.14} />
+                  <stop offset="100%" stopColor="var(--danger)" stopOpacity={0.02} />
+                </linearGradient>
+              </defs>
+            )}
             <XAxis
               dataKey="beat"
               tick={{ fill: "var(--muted-2)", fontSize: 11, fontFamily: "var(--mono)" }}
@@ -92,6 +103,18 @@ export function AttentionChart({ state, showAggregate = true }: Props) {
                 }}
               />
             )}
+            {showAggregate && verdict && (
+              <Area
+                type="monotone"
+                dataKey="__disagreement"
+                name="Panel disagreement"
+                stroke="none"
+                fill="url(#disBand)"
+                isAnimationActive={false}
+                connectNulls
+                activeDot={false}
+              />
+            )}
             {personas.map((p) => (
               <Line
                 key={p.id}
@@ -128,7 +151,7 @@ export function AttentionChart({ state, showAggregate = true }: Props) {
                 stroke="#fff"
               />
             )}
-          </LineChart>
+          </ComposedChart>
         </ResponsiveContainer>
       </div>
 
@@ -147,6 +170,12 @@ export function AttentionChart({ state, showAggregate = true }: Props) {
           <span className="item">
             <span className="swatch" style={{ background: "var(--ink)", height: 4 }} />
             Panel (weighted)
+          </span>
+        )}
+        {showAggregate && verdict && (
+          <span className="item" title="Spread of engagement across the six listeners">
+            <span className="swatch" style={{ background: "var(--danger)", opacity: 0.3, height: 8 }} />
+            Disagreement
           </span>
         )}
       </div>

@@ -7,7 +7,7 @@ import type { PopulationSweep } from "../types";
  * a crowd of ~200 sampled listeners and plot where that crowd drops off. Opt-in
  * and independent of the golden path; deterministic in mock mode.
  */
-export function PopulationSweepPanel({ runId }: { runId: string }) {
+export function PopulationSweepPanel({ runId, autoRun }: { runId: string; autoRun?: boolean }) {
   const [sweep, setSweep] = useState<PopulationSweep | null>(null);
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState<string | null>(null);
@@ -28,7 +28,7 @@ export function PopulationSweepPanel({ runId }: { runId: string }) {
   const auto = useRef(false);
   useEffect(() => {
     if (auto.current) return;
-    if (new URLSearchParams(window.location.search).get("sweep") === "1") {
+    if (autoRun || new URLSearchParams(window.location.search).get("sweep") === "1") {
       auto.current = true;
       run();
     }

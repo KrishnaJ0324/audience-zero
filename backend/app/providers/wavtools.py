@@ -99,6 +99,35 @@ def write_wav(path: str, samples: list[float]) -> float:
     return len(samples) / SR
 
 
+def peaks(path: str, buckets: int = 400) -> list[float]:
+    """Downsample a WAV into ``buckets`` normalized peak amplitudes (0..1) for a
+    waveform display. Reads via the stdlib — no numpy/ffmpeg."""
+    import struct as _struct
+
+    with wave.open(path, "r") as w:
+        n = w.getnframes()
+        sw = w.getsampwidth()
+        ch = w.getnchannels()
+        raw = w.readframes(n)
+    if sw != 2 or n == 0:
+        return [0.0] * buckets
+    total = len(raw) // 2
+    vals = _struct.unpack("<" + "h" * total, raw)
+    if ch > 1:
+        vals = vals[::ch]  # take the first channel
+    frames = len(vals)
+    buckets = max(1, min(buckets, frames))
+    step = frames / buckets
+    out: list[float] = []
+    for b in range(buckets):
+        lo = int(b * step)
+        hi = max(lo + 1, int((b + 1) * step))
+        chunk = vals[lo:hi]
+        peak = max((abs(v) for v in chunk), default=0) / 32767.0
+        out.append(round(peak, 4))
+    return out
+
+
 def compose_scene(
     line_samples: list[list[float]],
     music: bool = True,
