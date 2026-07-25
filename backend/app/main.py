@@ -8,6 +8,8 @@ subscribers.
 from __future__ import annotations
 
 import asyncio
+import os
+import shutil
 from contextlib import asynccontextmanager
 from pathlib import Path
 
@@ -60,6 +62,45 @@ class ProjectIn(BaseModel):
 @app.get("/health")
 async def health() -> dict:
     return {"status": "ok", "provider": pipeline.providers.kind, "version": app.version}
+
+
+# --------------------------------------------------------------------------- #
+# Deployment verification gates (Databricks Apps). Existence checks only —
+# a secret's value is never returned or logged.
+# --------------------------------------------------------------------------- #
+@app.get("/debug/env-check")
+async def env_check() -> dict:
+    return {
+        "openai_key_present": bool(settings.effective_openai_key),
+        "openai_api_key_env": "OPENAI_API_KEY" in os.environ,
+        "az_openai_api_key_env": "AZ_OPENAI_API_KEY" in os.environ,
+        "resolved_provider": settings.resolved_provider,
+        "db_path": str(settings.db_path),
+        "audio_dir": str(settings.audio_dir),
+        "db_writable": os.access(settings.db_path.parent, os.W_OK),
+        "audio_writable": os.access(settings.audio_dir, os.W_OK),
+        "personas": len(pipeline.registry.load()),
+    }
+
+
+@app.get("/debug/ffmpeg")
+async def ffmpeg_check() -> dict:
+    # Informational only: the mixer is the stdlib `wave` implementation, so a
+    # missing ffmpeg never degrades audio production.
+    return {"ffmpeg_available": shutil.which("ffmpeg") is not None, "mixer": "stdlib-wave"}
+
+
+@app.get("/debug/sse-counter")
+async def sse_counter():
+    """Proxy-buffering probe: the ten numbers must arrive ~1/second, not in one
+    burst at the end. A burst means switch the dashboard to 1s polling."""
+
+    async def gen():
+        for i in range(10):
+            yield {"event": "tick", "data": str(i)}
+            await asyncio.sleep(1.0)
+
+    return EventSourceResponse(gen())
 
 
 @app.get("/personas")

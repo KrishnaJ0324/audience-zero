@@ -1,0 +1,46 @@
+# Databricks Apps entry config. The app source path is `backend/`, so this file,
+# requirements.txt, the `app/` package and the built `static/` bundle all sit
+# beside each other at the deployed root.
+#
+# No `--port`: the runtime injects DATABRICKS_APP_PORT (8000 = uvicorn default).
+# Hardcoding a port is the #1 cause of a crash loop.
+command: ["uvicorn", "app.server:server", "--host", "0.0.0.0"]
+
+env:
+  # Injected from the app's Secret resource. The resource name must equal the
+  # `valueFrom` value below (App -> Edit -> Resources). Never a literal value here.
+  # app/config.py reads AZ_OPENAI_API_KEY first, then falls back to OPENAI_API_KEY.
+  - name: OPENAI_API_KEY
+    valueFrom: openai_api_key
+
+  # auto => real models when a key is attached, deterministic mock provider when
+  # it is not. The app is demoable either way.
+  - name: AZ_PROVIDER
+    value: "auto"
+
+  # Alternative to an external OpenAI key on Free Edition: Databricks Foundation
+  # Model APIs speak the OpenAI protocol. Point the base URL at the workspace's
+  # serving endpoints and set OPENAI_API_KEY to a Databricks token instead. The
+  # per-persona `model:` values in personas/*.yaml must then name served
+  # endpoints (e.g. databricks-meta-llama-3-3-70b-instruct), not gpt-4o.
+  # - name: AZ_OPENAI_BASE_URL
+  #   value: "https://<workspace-host>/serving-endpoints"
+
+  # The deployed source tree is read-only; SQLite + produced WAVs must live on
+  # the container's writable scratch space. Ephemeral: a restart clears run
+  # history, which is why the demo seed is re-runnable (see README).
+  - name: AZ_DB_PATH
+    value: "/tmp/audience-zero/audience_zero.db"
+  - name: AZ_AUDIO_DIR
+    value: "/tmp/audience-zero/audio"
+
+  # Theatre pacing for the progressive curve reveal.
+  - name: AZ_REVEAL_DELAY_S
+    value: "0.18"
+
+  # Real model calls behind the workspace proxy: keep the per-agent budget
+  # generous, the orchestrator degrades to N-1 rather than blocking a run.
+  - name: AZ_PER_AGENT_TIMEOUT_S
+    value: "90"
+  - name: AZ_PER_AGENT_RETRIES
+    value: "1"

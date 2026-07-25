@@ -24,20 +24,20 @@ LLM/STT/TTS automatically when a key is present.
 
 ## Quickstart
 
-Prerequisites: **Python 3.11+**, **Node 18+**. A `venv` with backend deps is
-already provisioned in this repo; if you're starting fresh, recreate it (see
-[Fresh setup](#fresh-setup)).
+Prerequisites: **Python 3.10+**, **Node 18+**. A venv with backend deps is
+already provisioned at `backend/.venv`; if you're starting fresh, recreate it
+(see [Fresh setup](#fresh-setup)).
 
 ### 1. Backend (terminal 1)
 
 ```bash
 cd backend
 # seed the cached golden-path demo run (optional but recommended for demos)
-../venv/Scripts/python.exe scripts/seed_demo.py
+.venv/bin/python scripts/seed_demo.py
 # start the API gateway
-../venv/Scripts/python.exe -m uvicorn app.main:app --port 8000
+.venv/bin/python -m uvicorn app.main:app --port 8000
 ```
-> On macOS/Linux the interpreter is `../venv/bin/python`.
+> On Windows the interpreter is `.venv\Scripts\python.exe`.
 
 ### 2. Frontend (terminal 2)
 
@@ -180,8 +180,11 @@ unit tests both run offline:
 
 ```bash
 cd backend
-AZ_PROVIDER=mock AZ_REVEAL_DELAY_S=0 ../venv/Scripts/python.exe -m pytest -q
+AZ_PROVIDER=mock AZ_REVEAL_DELAY_S=0 .venv/bin/python -m pytest -q
 ```
+
+`AZ_PROVIDER=mock` is required, not cosmetic: `.env` carries a real key and
+`AZ_PROVIDER=auto`, so an unguarded run resolves to the OpenAI provider.
 
 - `test_verdict_engine.py` — locks the headline maths (aggregate curve,
   retention model, weakest-beat, before/after lift, degraded-panel safety).
@@ -189,6 +192,67 @@ AZ_PROVIDER=mock AZ_REVEAL_DELAY_S=0 ../venv/Scripts/python.exe -m pytest -q
   deliberately-boring-middle script dips in the middle, the thriller purist
   prefers thrillers and the romance binger prefers romance, and runs are
   deterministic.
+
+---
+
+## Deploy to Databricks Apps
+
+**Live:** https://audience-zero-7474646075169951.aws.databricksapps.com — verified
+end to end with real OpenAI models on 2026-07-25. Step-by-step runbook, Free
+Edition quotas and failure fallbacks: [`DEPLOY_RUNBOOK.md`](DEPLOY_RUNBOOK.md).
+
+One app, one process: FastAPI serves the API under `/api` and the built React
+bundle at `/`. `backend/` is the deployed source root — `app.yaml`,
+`requirements.txt`, `app/` and the generated `static/` all sit there, and
+`app/server.py` is the ASGI entry point (`app/main.py` stays the local-dev entry
+behind the Vite proxy).
+
+```bash
+# once: CLI + auth
+databricks auth login --host https://<workspace-url> --profile hackathon
+databricks current-user me --profile hackathon        # gate: prints your user JSON
+
+# once: the OpenAI key as a secret (the value is never echoed)
+databricks secrets create-scope audience-zero -p hackathon
+databricks secrets put-secret audience-zero openai_api_key -p hackathon
+# then App → Edit → Resources → add Secret resource named `openai_api_key`
+# (scope audience-zero, key openai_api_key) — the name must match app.yaml's valueFrom
+
+# every deploy: build → sync → deploy → print the verification URLs
+./scripts/deploy_databricks.sh
+DRY_RUN=1 ./scripts/deploy_databricks.sh     # show what would sync, deploy nothing
+SKIP_BUILD=1 ./scripts/deploy_databricks.sh  # backend-only change, reuse the bundle
+```
+
+Verification gates (open in a browser — the app URL sits behind Databricks
+OAuth, so `curl` from outside needs a bearer token):
+
+| Check | URL | Pass |
+|---|---|---|
+| API up | `/api/health` | 200 `{"status":"ok","provider":…}` |
+| UI served | `/` | dashboard loads |
+| Secret injected | `/api/debug/env-check` | `openai_key_present: true`, `db_writable: true` |
+| Audio mixer | `/api/debug/ffmpeg` | any result — the mixer is stdlib `wave`, ffmpeg is never required |
+| SSE not buffered | `/api/debug/sse-counter` | ten ticks ~1/second, **not** one burst at the end |
+
+If the SSE ticks arrive in a single burst, a proxy is buffering: switch the
+dashboard to 1s polling of `GET /api/runs/{id}` (visually identical) and keep the
+SSE path behind a flag.
+
+State on the deployed app is **ephemeral** — `AZ_DB_PATH` and `AZ_AUDIO_DIR`
+point at `/tmp` because the synced source tree is read-only, so a restart clears
+run history and produced WAVs. Re-seed the cached golden run when that matters.
+
+### Rollback
+
+Localhost is the drilled fallback; it needs no Databricks at all:
+
+```bash
+cd backend && AZ_PROVIDER=mock .venv/bin/python -m uvicorn app.server:server --port 8000
+# then open http://localhost:8000  (same single-process topology as the deployed app)
+```
+
+Logs for a misbehaving deploy: `databricks apps logs audience-zero -p hackathon`.
 
 ---
 
@@ -216,25 +280,33 @@ backend with `VITE_PROXY_TARGET=http://localhost:8020 npm run dev`.
 ## Project structure
 
 ```
-tes-ready/
-├── backend/
+audience-zero/
+├── backend/                 # ← the Databricks Apps source root
+│   ├── app.yaml             # Apps entry config (command + env, no secrets)
 │   ├── app/                 # FastAPI app, services, providers, contracts
+│   │   ├── main.py          # API gateway (local dev entry)
+│   │   └── server.py        # single-process entry: /api + static bundle
 │   ├── personas/            # 6 persona YAML configs (data, not code)
 │   ├── data/scripts/        # demo + 3 calibration scripts
 │   ├── scripts/seed_demo.py # pre-cache the golden run
+│   ├── static/              # built dashboard — generated, uncommitted, but
+│   │                        #   deliberately NOT gitignored: `databricks sync`
+│   │                        #   honours .gitignore and would skip the bundle
 │   ├── tests/               # verdict + divergence tests
-│   └── requirements.txt
+│   ├── requirements.txt     # runtime deps (fastapi/uvicorn unpinned for Apps)
+│   ├── requirements-dev.txt # + pytest
+│   └── .venv/               # Python environment
 ├── frontend/                # React + Vite + Recharts dashboard
-├── venv/                    # Python environment
-└── plan.pdf                 # the original build plan
+├── scripts/deploy_databricks.sh
+└── plan.md                  # the original build plan
 ```
 
 ## Fresh setup
 
 ```bash
-python -m venv venv
-./venv/Scripts/python.exe -m pip install -r backend/requirements.txt   # Windows
-# ./venv/bin/pip install -r backend/requirements.txt                    # macOS/Linux
+python3 -m venv backend/.venv
+backend/.venv/bin/pip install -r backend/requirements-dev.txt   # macOS/Linux
+# backend\.venv\Scripts\python.exe -m pip install -r backend\requirements-dev.txt   # Windows
 cd frontend && npm install
 ```
 

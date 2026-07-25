@@ -1,0 +1,15 @@
+{
+  "name": "audience-zero",
+  "description": "Audience Zero — synthetic test audience for serialized audio",
+  "resources": [
+    {
+      "name": "openai_api_key",
+      "description": "OpenAI key for the persona panel (LLM/STT/TTS)",
+      "secret": {
+        "scope": "audience-zero",
+        "key": "openai_api_key",
+        "permission": "READ"
+      }
+    }
+  ]
+}

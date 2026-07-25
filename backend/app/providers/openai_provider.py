@@ -22,7 +22,13 @@ from .wavtools import speak as _mock_speak
 def _client(settings: Settings):
     from openai import AsyncOpenAI
 
-    return AsyncOpenAI(api_key=settings.effective_openai_key)
+    # base_url is set only when pointing at an OpenAI-compatible gateway (e.g.
+    # Databricks Foundation Model APIs at /serving-endpoints); otherwise the SDK
+    # default applies. Model names must match that gateway's served endpoints.
+    kwargs: dict = {"api_key": settings.effective_openai_key}
+    if settings.openai_base_url:
+        kwargs["base_url"] = settings.openai_base_url
+    return AsyncOpenAI(**kwargs)
 
 
 class OpenAILLM:
