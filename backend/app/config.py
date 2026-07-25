@@ -29,6 +29,11 @@ class Settings(BaseSettings):
     # --- providers ------------------------------------------------------
     provider: Literal["auto", "mock", "openai"] = "auto"
     openai_api_key: str | None = None
+    # Optional OpenAI-compatible base URL. Databricks Foundation Model APIs are
+    # callable with the OpenAI client, so on a Free Edition workspace the same
+    # adapter runs against `https://<host>/serving-endpoints` with a Databricks
+    # token — no external OpenAI key and no external spend. Unset => api.openai.com.
+    openai_base_url: str | None = None
 
     # OpenAI model defaults (per-persona models still win when configured)
     stt_model: str = "gpt-4o-transcribe"

@@ -1,1 +1,32 @@
-{"root":["./src/app.tsx","./src/api.ts","./src/main.tsx","./src/types.ts","./src/usenav.ts","./src/userun.ts","./src/components/attentionchart.tsx","./src/components/audiodisclosure.tsx","./src/components/beforeafterpanel.tsx","./src/components/bingegauge.tsx","./src/components/calibrationoverlay.tsx","./src/components/confidencepanel.tsx","./src/components/diagnosticspanel.tsx","./src/components/episodeview.tsx","./src/components/evidencetimeline.tsx","./src/components/header.tsx","./src/components/jobstatus.tsx","./src/components/personacards.tsx","./src/components/personasview.tsx","./src/components/populationsweeppanel.tsx","./src/components/projectview.tsx","./src/components/projectsview.tsx","./src/components/revisionlab.tsx","./src/components/runview.tsx","./src/components/scriptinput.tsx","./src/components/shareexportbar.tsx","./src/components/verdictpanel.tsx"],"version":"5.9.3"}
+{
+  "root": [
+    "./src/api.ts",
+    "./src/app.tsx",
+    "./src/components/attentionchart.tsx",
+    "./src/components/audiodisclosure.tsx",
+    "./src/components/beforeafterpanel.tsx",
+    "./src/components/bingegauge.tsx",
+    "./src/components/calibrationoverlay.tsx",
+    "./src/components/confidencepanel.tsx",
+    "./src/components/diagnosticspanel.tsx",
+    "./src/components/episodeview.tsx",
+    "./src/components/evidencetimeline.tsx",
+    "./src/components/header.tsx",
+    "./src/components/jobstatus.tsx",
+    "./src/components/personacards.tsx",
+    "./src/components/personasview.tsx",
+    "./src/components/populationsweeppanel.tsx",
+    "./src/components/projectview.tsx",
+    "./src/components/projectsview.tsx",
+    "./src/components/revisionlab.tsx",
+    "./src/components/runview.tsx",
+    "./src/components/scriptinput.tsx",
+    "./src/components/shareexportbar.tsx",
+    "./src/components/verdictpanel.tsx",
+    "./src/main.tsx",
+    "./src/types.ts",
+    "./src/usenav.ts",
+    "./src/userun.ts"
+  ],
+  "version": "5.9.3"
+}
