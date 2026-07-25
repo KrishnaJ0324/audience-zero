@@ -72,8 +72,30 @@ def _persona_dto(p) -> dict:
 
 @app.get("/personas")
 async def personas() -> list[dict]:
-    """The full roster the panel will use: six built-ins + enabled custom personas."""
-    return [_persona_dto(p) for p in await pipeline.roster()]
+    """The persona library — every definition (built-in + custom). Enablement is
+    chosen per project (see /projects/{id}/personas)."""
+    return [_persona_dto(p) for p in await pipeline.all_personas()]
+
+
+class ToggleIn(BaseModel):
+    enabled: bool
+
+
+@app.get("/projects/{project_id}/personas")
+async def project_personas(project_id: str) -> list[dict]:
+    """Every persona with its ENABLED state for this project. Only enabled
+    personas run when analyzing episodes in the project."""
+    if not await pipeline.store.get_project(project_id):
+        raise HTTPException(404, "project not found")
+    return [_persona_dto(p) for p in await pipeline.all_personas(project_id)]
+
+
+@app.post("/projects/{project_id}/personas/{persona_id}/toggle")
+async def toggle_project_persona(project_id: str, persona_id: str, payload: ToggleIn):
+    if not await pipeline.store.get_project(project_id):
+        raise HTTPException(404, "project not found")
+    all_p = await pipeline.set_persona_enabled(project_id, persona_id, payload.enabled)
+    return [_persona_dto(p) for p in all_p]
 
 
 class PersonaIn(BaseModel):

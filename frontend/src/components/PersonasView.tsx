@@ -41,6 +41,19 @@ export function PersonasView({ provider }: { provider: string }) {
   const custom = roster.filter((p) => p.custom);
   const built = roster.filter((p) => !p.custom);
 
+  const Row = ({ p, deletable }: { p: Persona; deletable?: boolean }) => (
+    <div className="persona-row">
+      <span className="swatch-dot" style={{ background: p.color, width: 12, height: 12 }} />
+      <div style={{ flex: 1, minWidth: 0 }}>
+        <div className="h-title" style={{ fontSize: 14 }}>{p.name}</div>
+        <div className="timeline-tag">{p.archetype} · {p.model}</div>
+      </div>
+      {deletable
+        ? <button className="ghost del-btn" onClick={() => remove(p.id)} title="Delete persona">✕</button>
+        : <span className="diag-status">built-in</span>}
+    </div>
+  );
+
   return (
     <div className="grid">
       <div className="stack">
@@ -79,32 +92,19 @@ export function PersonasView({ provider }: { provider: string }) {
 
       <div className="stack">
         <div className="card">
-          <h2 data-idx="§">Your personas<span className="note">{custom.length} custom</span></h2>
-          {custom.length === 0 && <div className="subline">No custom personas yet — create one, or draft with the chat.</div>}
-          {custom.map((p) => (
-            <div key={p.id} className="persona-row">
-              <span className="swatch-dot" style={{ background: p.color, width: 12, height: 12 }} />
-              <div style={{ flex: 1, minWidth: 0 }}>
-                <div className="h-title" style={{ fontSize: 14 }}>{p.name}</div>
-                <div className="timeline-tag">{p.archetype} · {p.model}</div>
-              </div>
-              <button className="ghost del-btn" onClick={() => remove(p.id)} title="Delete persona">✕</button>
-            </div>
-          ))}
-        </div>
-
-        <div className="card">
-          <h2 data-idx="◆">Built-in panel<span className="note">always on</span></h2>
-          {built.map((p) => (
-            <div key={p.id} className="persona-row">
-              <span className="swatch-dot" style={{ background: p.color, width: 12, height: 12 }} />
-              <div style={{ flex: 1, minWidth: 0 }}>
-                <div className="h-title" style={{ fontSize: 14 }}>{p.name}</div>
-                <div className="timeline-tag">{p.archetype} · {p.model}</div>
-              </div>
-              <span className="diag-status">built-in</span>
-            </div>
-          ))}
+          <h2 data-idx="§">Persona library<span className="note">{roster.length} total</span></h2>
+          <div className="subline" style={{ marginBottom: 12 }}>
+            Personas created here are available to every project. Choose <b>which ones run</b>
+            {" "}per project — open a project and use its <b>Test panel</b>.
+          </div>
+          {custom.length > 0 && (
+            <>
+              <div className="field-label">Custom</div>
+              {custom.map((p) => <Row key={p.id} p={p} deletable />)}
+            </>
+          )}
+          <div className="field-label" style={{ marginTop: custom.length ? 14 : 0 }}>Built-in</div>
+          {built.map((p) => <Row key={p.id} p={p} />)}
         </div>
       </div>
     </div>

@@ -1,6 +1,7 @@
 import { useEffect, useState } from "react";
 import { api } from "../api";
 import type { EpisodeMeta, Project } from "../types";
+import { PersonaPanel } from "./PersonaPanel";
 import { ScriptInput } from "./ScriptInput";
 
 /** A project: its episodes + a "new episode" ingest. */
@@ -40,6 +41,7 @@ export function ProjectView({ id, go }: { id: string; go: (to: string) => void }
         {err && <div className="card"><div className="error">⚠ {err}</div></div>}
       </div>
       <div className="stack">
+        <PersonaPanel projectId={id} />
         <div className="card">
           <h2 data-idx="§">
             {project?.name ?? "Project"}

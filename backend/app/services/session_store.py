@@ -41,6 +41,13 @@ CREATE TABLE IF NOT EXISTS actuals (
 CREATE TABLE IF NOT EXISTS custom_personas (
     id TEXT PRIMARY KEY, name TEXT, created_at TEXT, data TEXT NOT NULL
 );
+CREATE TABLE IF NOT EXISTS persona_state (
+    id TEXT PRIMARY KEY, enabled INTEGER NOT NULL
+);
+CREATE TABLE IF NOT EXISTS project_persona_state (
+    project_id TEXT, persona_id TEXT, enabled INTEGER NOT NULL,
+    PRIMARY KEY (project_id, persona_id)
+);
 CREATE INDEX IF NOT EXISTS idx_episodes_project ON episodes(project_id);
 CREATE INDEX IF NOT EXISTS idx_versions_episode ON versions(episode_id);
 CREATE INDEX IF NOT EXISTS idx_runs_version ON runs(version_id);
@@ -195,7 +202,25 @@ class SessionStore:
     async def delete_persona(self, persona_id: str) -> None:
         async with aiosqlite.connect(self.db_path) as db:
             await db.execute("DELETE FROM custom_personas WHERE id=?", (persona_id,))
+            await db.execute("DELETE FROM project_persona_state WHERE persona_id=?", (persona_id,))
             await db.commit()
+
+    # --- per-project persona enable/disable state ----------------------
+    async def set_project_persona_enabled(self, project_id: str, persona_id: str, enabled: bool) -> None:
+        async with aiosqlite.connect(self.db_path) as db:
+            await db.execute(
+                "INSERT OR REPLACE INTO project_persona_state (project_id, persona_id, enabled)"
+                " VALUES (?,?,?)",
+                (project_id, persona_id, 1 if enabled else 0),
+            )
+            await db.commit()
+
+    async def project_persona_states(self, project_id: str) -> dict[str, bool]:
+        rows = await self._all(
+            "SELECT persona_id, enabled FROM project_persona_state WHERE project_id=?",
+            (project_id,),
+        )
+        return {r[0]: bool(r[1]) for r in rows}
 
     # --- helpers --------------------------------------------------------
     async def _one(self, sql: str, args: tuple):
