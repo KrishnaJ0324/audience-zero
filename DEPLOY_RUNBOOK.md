@@ -181,6 +181,60 @@ app's **Logs** tab in the workspace UI.
 - **Crash loop on startup** → check for a hardcoded `--port` (the runtime injects
   `DATABRICKS_APP_PORT`), then for an import error from a dep missing in
   `requirements.txt`.
+- **`[BUILD] [ERROR] No command to run and no Python file found. Please add a
+  'command' field to your app.yml`** → a git-backed deployment was pointed at the
+  **repo root**, which has no `app.yaml`. The source path must be **`backend`**.
+  Observed live: it overrode a healthy SNAPSHOT deploy and left the app CRASHED.
+- **UI is a version behind the API** (old hashed asset served, new endpoints
+  answering) → the git-backed deploy ships the **committed** `backend/static/`.
+  Rebuilding locally is not enough; the bundle has to be committed and pushed, or
+  the git deploy keeps serving the stale one. Symptom: `/` references a different
+  `assets/index-*.js` hash than `backend/static/assets/` holds locally. Diagnose:
+  `curl -H "Authorization: Bearer $(databricks auth token -p hackathon | jq -r .access_token)" <url>/ | grep -oE 'assets/[^"]+'`
+
+## Git-backed release flow (deploy on every commit)
+
+One command per release — tests, build, secret guard, commit, push, deploy:
+
+```bash
+./scripts/release.sh "what changed"
+```
+
+It runs the backend tests (mock provider), rebuilds the dashboard into
+`backend/static/`, refuses to continue if a key-shaped string is in any committable
+file or `.env` stopped being ignored, commits, pushes, then deploys that commit via
+`SOURCE_MODE=git`.
+
+```bash
+NO_DEPLOY=1 ./scripts/release.sh "wip"     # commit + push only
+SKIP_TESTS=1 ./scripts/release.sh "docs"   # skip the test gate
+SOURCE_MODE=git ./scripts/deploy_databricks.sh   # redeploy current pushed commit
+```
+
+**`backend/static/` must be committed.** Apps installs `requirements.txt` but never
+runs `npm`, so a git deploy ships whatever bundle is in that commit. `release.sh`
+rebuilds and commits it every time; git-mode `deploy_databricks.sh` warns when
+`backend/` has uncommitted work, because that work will not be deployed.
+
+Optional: **App → Edit → Configure Git → Auto deploy on push** makes any push
+deploy itself. Convenient, but it bypasses the test and secret gates in
+`release.sh` — and a push then silently replaces a local snapshot deploy.
+
+### Two deployment modes, and how they fight
+
+`apps deploy --source-code-path` (what the script does) creates a **SNAPSHOT**
+deployment from a workspace path. Configuring **Git** on the app creates its own
+deployments. Both target the same app, and the most recent one wins — so a push, or
+a UI redeploy, silently replaces a snapshot. Pick one mode per demo:
+
+- **SNAPSHOT (script)** — fastest loop, deploys exactly the local tree including a
+  freshly built bundle. Nothing needs committing.
+- **Git-backed** — source path must be `backend`, and `backend/static/` must be
+  committed at the same commit as the code it serves.
+
+`databricks sync --full` does not prune files the source no longer has, so old
+hashed assets accumulate in the workspace path. Harmless — `index.html` names the
+current ones — but don't read a stale `index-*.js` there as the live bundle.
 
 ---
 

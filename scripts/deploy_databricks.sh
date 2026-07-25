@@ -4,16 +4,25 @@
 #
 #   ./scripts/deploy_databricks.sh
 #
+# Two source modes — see DEPLOY_RUNBOOK.md "Two deployment modes":
+#   SOURCE_MODE=local (default)  build locally, sync the tree up, deploy it.
+#                                Fastest loop; nothing needs committing.
+#   SOURCE_MODE=git              deploy from the app's Git-integration clone, so
+#                                the deployed code is exactly a pushed commit.
+#                                Requires backend/static/ committed at that commit.
+#
 # Env overrides:
 #   DATABRICKS_PROFILE   ~/.databrickscfg profile      (default: hackathon)
 #   APP_NAME             Databricks app name           (default: audience-zero)
-#   WORKSPACE_PATH       source-code path in workspace (default: /Workspace/Users/<me>/<APP_NAME>)
-#   SKIP_BUILD=1         reuse the existing backend/static bundle
+#   SOURCE_MODE          local | git                   (default: local)
+#   WORKSPACE_PATH       source-code path in workspace (default depends on mode)
+#   SKIP_BUILD=1         reuse the existing backend/static bundle (local mode)
 #   DRY_RUN=1            show what would sync, deploy nothing
 set -euo pipefail
 
 APP_NAME="${APP_NAME:-audience-zero}"
 PROFILE="${DATABRICKS_PROFILE:-hackathon}"
+SOURCE_MODE="${SOURCE_MODE:-local}"
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 SOURCE_DIR="$REPO_ROOT/backend"   # app.yaml + requirements.txt + app/ + static/ live here
 
@@ -26,44 +35,71 @@ databricks current-user me -p "$PROFILE" -o json >/dev/null \
   || { echo "not authenticated: databricks auth login --host <workspace-url> --profile $PROFILE"; exit 1; }
 USER_NAME="$(databricks current-user me -p "$PROFILE" -o json \
   | python3 -c 'import json,sys; print(json.load(sys.stdin)["userName"])')"
-WS_PATH="${WORKSPACE_PATH:-/Workspace/Users/$USER_NAME/$APP_NAME}"
-echo "user=$USER_NAME  app=$APP_NAME  source=$WS_PATH"
+case "$SOURCE_MODE" in
+  local) WS_PATH="${WORKSPACE_PATH:-/Workspace/Users/$USER_NAME/$APP_NAME}" ;;
+  # The Apps git integration clones the repo into <app>-git and refreshes it at
+  # build time. The source path must be the `backend` subdirectory: the repo root
+  # has no app.yaml, and pointing at it fails with
+  # "No command to run and no Python file found".
+  git)   WS_PATH="${WORKSPACE_PATH:-/Workspace/Users/$USER_NAME/$APP_NAME-git/backend}" ;;
+  *)     echo "SOURCE_MODE must be 'local' or 'git' (got '$SOURCE_MODE')"; exit 1 ;;
+esac
+echo "user=$USER_NAME  app=$APP_NAME  mode=$SOURCE_MODE  source=$WS_PATH"
 
-step "Build dashboard into backend/static"
-if [[ "${SKIP_BUILD:-0}" == "1" ]]; then
-  echo "SKIP_BUILD=1 — reusing existing bundle"
+if [[ "$SOURCE_MODE" == "local" ]]; then
+  step "Build dashboard into backend/static"
+  if [[ "${SKIP_BUILD:-0}" == "1" ]]; then
+    echo "SKIP_BUILD=1 — reusing existing bundle"
+  else
+    npm --prefix "$REPO_ROOT/frontend" run build
+    rm -rf "$SOURCE_DIR/static"
+    cp -r "$REPO_ROOT/frontend/dist" "$SOURCE_DIR/static"
+  fi
+  [[ -f "$SOURCE_DIR/static/index.html" ]] || { echo "backend/static/index.html missing"; exit 1; }
+  [[ -f "$SOURCE_DIR/app.yaml" ]] || { echo "backend/app.yaml missing"; exit 1; }
+
+  # Never ship: the venv, caches, tests, local SQLite/WAV artifacts, or any .env.
+  # `databricks sync` honours .gitignore, so `static/` must stay un-ignored;
+  # --include makes that explicit rather than implicit.
+  SYNC_ARGS=(
+    --include 'static/**'
+    --exclude '.venv/**'
+    --exclude '**/__pycache__/**'
+    --exclude '.pytest_cache/**'
+    --exclude 'tests/**'
+    --exclude 'data/*.db'
+    --exclude 'data/audio/**'
+    --exclude '.env'
+    --exclude 'requirements-dev.txt'
+  )
+
+  if [[ "${DRY_RUN:-0}" == "1" ]]; then
+    step "Dry-run sync"
+    databricks sync "$SOURCE_DIR" "$WS_PATH" -p "$PROFILE" --full --dry-run "${SYNC_ARGS[@]}"
+    echo "DRY_RUN=1 — stopping before deploy"
+    exit 0
+  fi
+
+  step "Sync source to workspace"
+  databricks sync "$SOURCE_DIR" "$WS_PATH" -p "$PROFILE" --full "${SYNC_ARGS[@]}"
 else
-  npm --prefix "$REPO_ROOT/frontend" run build
-  rm -rf "$SOURCE_DIR/static"
-  cp -r "$REPO_ROOT/frontend/dist" "$SOURCE_DIR/static"
+  step "Git mode — deploying a pushed commit (no local build, no sync)"
+  # Warn loudly when the local tree isn't what will be deployed: git mode deploys
+  # the remote commit, so uncommitted work (a rebuilt bundle especially) is invisible.
+  if ! git -C "$REPO_ROOT" diff --quiet HEAD -- backend || \
+     [[ -n "$(git -C "$REPO_ROOT" ls-files -o --exclude-standard -- backend/static)" ]]; then
+    echo "WARNING: backend/ has uncommitted changes — they will NOT be deployed."
+    echo "         Run scripts/release.sh to build, commit and push first."
+  fi
+  echo "local HEAD : $(git -C "$REPO_ROOT" rev-parse --short HEAD) on $(git -C "$REPO_ROOT" rev-parse --abbrev-ref HEAD)"
+  if [[ "${DRY_RUN:-0}" == "1" ]]; then
+    echo "DRY_RUN=1 — would deploy $WS_PATH; stopping"
+    exit 0
+  fi
+  databricks workspace get-status "$WS_PATH" -p "$PROFILE" -o json >/dev/null \
+    || { echo "git clone path not found: $WS_PATH
+Configure Git on the app first (App -> Edit -> Configure Git, source path 'backend')."; exit 1; }
 fi
-[[ -f "$SOURCE_DIR/static/index.html" ]] || { echo "backend/static/index.html missing"; exit 1; }
-[[ -f "$SOURCE_DIR/app.yaml" ]] || { echo "backend/app.yaml missing"; exit 1; }
-
-# Never ship: the venv, caches, tests, local SQLite/WAV artifacts, or any .env.
-# `databricks sync` honours .gitignore, so `static/` must stay un-ignored;
-# --include makes that explicit rather than implicit.
-SYNC_ARGS=(
-  --include 'static/**'
-  --exclude '.venv/**'
-  --exclude '**/__pycache__/**'
-  --exclude '.pytest_cache/**'
-  --exclude 'tests/**'
-  --exclude 'data/*.db'
-  --exclude 'data/audio/**'
-  --exclude '.env'
-  --exclude 'requirements-dev.txt'
-)
-
-if [[ "${DRY_RUN:-0}" == "1" ]]; then
-  step "Dry-run sync"
-  databricks sync "$SOURCE_DIR" "$WS_PATH" -p "$PROFILE" --full --dry-run "${SYNC_ARGS[@]}"
-  echo "DRY_RUN=1 — stopping before deploy"
-  exit 0
-fi
-
-step "Sync source to workspace"
-databricks sync "$SOURCE_DIR" "$WS_PATH" -p "$PROFILE" --full "${SYNC_ARGS[@]}"
 
 step "Ensure app exists"
 databricks apps get "$APP_NAME" -p "$PROFILE" -o json >/dev/null 2>&1 \
