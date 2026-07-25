@@ -71,5 +71,22 @@ if [[ "${NO_DEPLOY:-0}" == "1" ]]; then
   exit 0
 fi
 
-step "Deploy that commit from the app's Git clone"
-SOURCE_MODE=git DATABRICKS_PROFILE="$PROFILE" ./scripts/deploy_databricks.sh
+step "Deploy the just-pushed commit"
+# Deployed in `local` mode on purpose. Everything is already committed and pushed
+# above, so the working tree is bit-identical to origin/$BRANCH — uploading it IS
+# deploying that commit, and it needs no workspace Git credential.
+#
+# `SOURCE_MODE=git` is NOT used here: `apps deploy --source-code-path <clone>` does
+# not pull. The Apps git-integration clone is only refreshed by a git-triggered
+# deploy (UI Redeploy, or auto-deploy on push), so deploying from it ships whatever
+# was cloned last — silently shipping a stale bundle. Verified the hard way.
+if ! git diff --quiet HEAD || [[ -n "$(git ls-files -o --exclude-standard)" ]]; then
+  echo "ABORT: working tree diverged from HEAD after the push — refusing to deploy"
+  git status --short
+  exit 1
+fi
+LOCAL="$(git rev-parse HEAD)"; REMOTE_SHA="$(git rev-parse "$REMOTE/$BRANCH")"
+[[ "$LOCAL" == "$REMOTE_SHA" ]] \
+  || { echo "ABORT: HEAD ($LOCAL) != $REMOTE/$BRANCH ($REMOTE_SHA)"; exit 1; }
+echo "deploying $(git rev-parse --short HEAD) — tree clean and identical to $REMOTE/$BRANCH"
+SOURCE_MODE=local SKIP_BUILD=1 DATABRICKS_PROFILE="$PROFILE" ./scripts/deploy_databricks.sh

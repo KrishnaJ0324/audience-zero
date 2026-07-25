@@ -83,7 +83,14 @@ if [[ "$SOURCE_MODE" == "local" ]]; then
   step "Sync source to workspace"
   databricks sync "$SOURCE_DIR" "$WS_PATH" -p "$PROFILE" --full "${SYNC_ARGS[@]}"
 else
-  step "Git mode — deploying a pushed commit (no local build, no sync)"
+  step "Git mode — deploying the Apps git-integration clone"
+  # CAUTION: this does NOT pull. `apps deploy --source-code-path <clone>` deploys
+  # whatever is currently in that path, and the clone is only refreshed by a
+  # git-triggered deploy (UI Redeploy, or auto-deploy on push). If the clone is
+  # behind origin, this silently ships stale code — a stale `static/` bundle in
+  # particular gives you an old UI against a new API.
+  # Prefer scripts/release.sh, which pushes and then deploys the (identical) local
+  # tree. Use this mode only right after a UI Redeploy or with auto-deploy armed.
   # Warn loudly when the local tree isn't what will be deployed: git mode deploys
   # the remote commit, so uncommitted work (a rebuilt bundle especially) is invisible.
   if ! git -C "$REPO_ROOT" diff --quiet HEAD -- backend || \

@@ -202,14 +202,35 @@ One command per release — tests, build, secret guard, commit, push, deploy:
 
 It runs the backend tests (mock provider), rebuilds the dashboard into
 `backend/static/`, refuses to continue if a key-shaped string is in any committable
-file or `.env` stopped being ignored, commits, pushes, then deploys that commit via
-`SOURCE_MODE=git`.
+file or `.env` stopped being ignored, commits, pushes, asserts the tree is clean and
+`HEAD == origin/<branch>`, then deploys.
+
+Git stays the source of truth: nothing is deployed that isn't a pushed commit.
 
 ```bash
 NO_DEPLOY=1 ./scripts/release.sh "wip"     # commit + push only
 SKIP_TESTS=1 ./scripts/release.sh "docs"   # skip the test gate
-SOURCE_MODE=git ./scripts/deploy_databricks.sh   # redeploy current pushed commit
 ```
+
+**Why it deploys in `local` mode, not `git` mode.** By the time it deploys,
+everything is committed and pushed, so the working tree is bit-identical to
+`origin/<branch>` — uploading it *is* deploying that commit, and it needs no
+workspace Git credential. `apps deploy --source-code-path <clone>` **does not pull**:
+the Apps git-integration clone at `<app>-git/` is refreshed only by a git-*triggered*
+deploy (UI Redeploy, or auto-deploy on push). Deploying from a behind-clone silently
+ships stale code — observed live: it re-shipped the v1 bundle against the v2 API.
+Verify which bundle is actually live:
+
+```bash
+T=$(databricks auth token -p hackathon | python3 -c 'import json,sys;print(json.load(sys.stdin)["access_token"])')
+curl -s -H "Authorization: Bearer $T" <app-url>/ | grep -oE 'assets/[^"]+'   # compare with backend/static/assets/
+```
+
+**True git-integration deploy** (Databricks pulls from GitHub itself) additionally
+needs a workspace Git credential — `databricks git-credentials create` with a GitHub
+PAT, since the repo is private — plus either auto-deploy on push or a UI Redeploy
+click. Neither exists in this workspace today (`git-credentials list` and
+`repos list` are both empty), which is exactly why the clone went stale.
 
 **`backend/static/` must be committed.** Apps installs `requirements.txt` but never
 runs `npm`, so a git deploy ships whatever bundle is in that commit. `release.sh`
