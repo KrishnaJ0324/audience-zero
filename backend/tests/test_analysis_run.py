@@ -90,6 +90,18 @@ def test_calibration_mae_and_state():
     assert uncal.state == "uncalibrated"
 
 
+def test_simulate_actual_is_deterministic_and_monotonic():
+    pred = [1.0, 0.85, 0.7, 0.55, 0.5, 0.48]
+    a = analysis.simulate_actual(pred, "ep_x")
+    b = analysis.simulate_actual(pred, "ep_x")
+    assert a == b                                    # deterministic
+    assert all(a[i] <= a[i - 1] + 1e-9 for i in range(1, len(a)))  # monotone
+    assert all(0.0 <= x <= 1.0 for x in a)
+    # tracks the prediction (high correlation), not identical
+    cal = analysis.calibrate(pred, a)
+    assert cal.correlation is not None and cal.correlation > 0.8
+
+
 # --- evidence offsets ------------------------------------------------------ #
 def test_evidence_spans_map_inside_their_beat_text():
     version, run = _run()

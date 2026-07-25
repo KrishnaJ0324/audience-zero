@@ -1,5 +1,6 @@
 import { api } from "../api";
 import type { LiveState } from "../useRun";
+import { AudioDisclosure } from "./AudioDisclosure";
 
 function playAudio(name: string | null | undefined) {
   if (!name) return;
@@ -72,6 +73,9 @@ export function PersonaCards({ state }: { state: LiveState }) {
           );
         })}
       </div>
+      {Object.values(reports).some((r) => r?.verdict_audio_path) && (
+        <AudioDisclosure />
+      )}
     </div>
   );
 }

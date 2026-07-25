@@ -116,7 +116,23 @@ function VariantCard({
       {v.produced_audio && (
         <div style={{ marginTop: 10 }}>
           <audio controls src={api.audioUrl(v.produced_audio.path)} style={{ width: "100%" }} />
-          <AudioDisclosure disclosure={v.disclosure} />
+          <div className="disclosure-row">
+            <AudioDisclosure disclosure={v.disclosure} />
+            {!readOnly && (
+              <label className="consent-select">
+                voice consent:
+                <select
+                  value={v.disclosure.voice_consent}
+                  onChange={async (e) => onRun(await api.variantConsent(runId, v.id, e.target.value))}
+                >
+                  <option value="synthetic_no_consent_needed">synthetic — none needed</option>
+                  <option value="consented">consent on file</option>
+                  <option value="pending">consent pending</option>
+                  <option value="unknown">unknown</option>
+                </select>
+              </label>
+            )}
+          </div>
         </div>
       )}
 

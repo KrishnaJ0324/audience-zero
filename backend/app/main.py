@@ -62,13 +62,50 @@ async def health() -> dict:
     return {"status": "ok", "provider": pipeline.providers.kind, "version": app.version}
 
 
+def _persona_dto(p) -> dict:
+    return {
+        "id": p.id, "name": p.name, "archetype": p.archetype, "model": p.model,
+        "color": p.color, "audience_weight": p.audience_weight,
+        "custom": p.custom, "enabled": p.enabled, "system_prompt": p.system_prompt,
+    }
+
+
 @app.get("/personas")
 async def personas() -> list[dict]:
-    return [
-        {"id": p.id, "name": p.name, "archetype": p.archetype, "model": p.model,
-         "color": p.color, "audience_weight": p.audience_weight}
-        for p in pipeline.registry.load()
-    ]
+    """The full roster the panel will use: six built-ins + enabled custom personas."""
+    return [_persona_dto(p) for p in await pipeline.roster()]
+
+
+class PersonaIn(BaseModel):
+    name: str
+    archetype: str = "Custom listener"
+    system_prompt: str
+    model: str | None = None
+    color: str | None = None
+
+
+@app.post("/personas")
+async def create_persona(payload: PersonaIn):
+    p = await pipeline.create_persona(
+        payload.name, payload.archetype, payload.system_prompt,
+        model=payload.model, color=payload.color,
+    )
+    return _persona_dto(p)
+
+
+@app.delete("/personas/{persona_id}")
+async def delete_persona(persona_id: str):
+    await pipeline.delete_persona(persona_id)
+    return {"deleted": persona_id}
+
+
+class PersonaChatIn(BaseModel):
+    messages: list[dict]
+
+
+@app.post("/personas/chat")
+async def persona_chat(payload: PersonaChatIn):
+    return await pipeline.chat_persona(payload.messages)
 
 
 @app.get("/scripts")
@@ -290,6 +327,19 @@ async def variant_status(run_id: str, variant_id: str, payload: VariantStatusIn)
     return run.model_dump()
 
 
+class ConsentIn(BaseModel):
+    consent: str
+
+
+@app.post("/runs/{run_id}/variants/{variant_id}/consent")
+async def variant_consent(run_id: str, variant_id: str, payload: ConsentIn):
+    valid = ("synthetic_no_consent_needed", "consented", "pending", "unknown")
+    if payload.consent not in valid:
+        raise HTTPException(400, f"consent must be one of {valid}")
+    run = await pipeline.set_variant_consent(run_id, variant_id, payload.consent)
+    return run.model_dump()
+
+
 @app.post("/runs/{run_id}/rerun")
 async def rerun(run_id: str, variant: str | None = None):
     parent = await pipeline.store.get_run(run_id)
@@ -363,11 +413,87 @@ async def get_shared(token: str):
 
 
 @app.get("/runs/{run_id}/summary")
-async def run_summary(run_id: str):
+async def run_summary(run_id: str, enrich: bool = False):
     run = await pipeline.store.get_run(run_id)
     if not run:
         raise HTTPException(404, "run not found")
-    return {"summary": summary_svc.producer_summary(run)}
+    text = summary_svc.producer_summary(run)
+    enriched = False
+    polish = getattr(pipeline.providers.llm, "summarize", None)
+    if enrich and pipeline.providers.kind == "openai" and polish is not None:
+        try:
+            text = await polish(text)
+            enriched = True
+        except Exception:
+            pass
+    return {"summary": text, "enriched": enriched}
+
+
+# --------------------------------------------------------------------------- #
+# Calibration (prediction vs. actual)
+# --------------------------------------------------------------------------- #
+def _parse_retention(text: str) -> list[float]:
+    """Accept JSON list, or CSV/whitespace numbers. Values >1 are treated as
+    percentages and divided by 100."""
+    text = text.strip()
+    nums: list[float] = []
+    try:
+        import json as _json
+        data = _json.loads(text)
+        if isinstance(data, dict):
+            data = data.get("retention", [])
+        nums = [float(x) for x in data]
+    except Exception:
+        for tok in text.replace(",", " ").replace("\n", " ").split():
+            try:
+                nums.append(float(tok))
+            except ValueError:
+                pass
+    return [(x / 100.0 if x > 1.0 else x) for x in nums]
+
+
+class ActualIn(BaseModel):
+    retention: list[float]
+
+
+@app.post("/runs/{run_id}/calibrate")
+async def calibrate_run(run_id: str, request: Request):
+    """Attach real retention (JSON body {retention:[…]} or a CSV/text upload) and
+    recompute calibration for this run."""
+    import json as _json
+
+    ctype = request.headers.get("content-type", "")
+    if ctype.startswith("multipart/form-data"):
+        form = await request.form()
+        f = form.get("file")
+        if f is not None and hasattr(f, "read"):
+            raw = (await f.read()).decode("utf-8", "ignore")  # type: ignore[union-attr]
+        else:
+            raw = str(form.get("retention") or "")
+        retention = _parse_retention(raw)
+    else:
+        raw = (await request.body()).decode("utf-8", "ignore")
+        try:
+            data = _json.loads(raw)
+            retention = _parse_retention(raw if isinstance(data, (list, dict)) else raw)
+        except Exception:
+            retention = _parse_retention(raw)
+    if not retention:
+        raise HTTPException(400, "no retention values found")
+    cal = await pipeline.attach_actual_for_run(run_id, retention)
+    return cal.model_dump()
+
+
+@app.post("/runs/{run_id}/calibrate/simulate")
+async def simulate_calibration(run_id: str):
+    cal = await pipeline.simulate_actual_for_run(run_id)
+    return cal.model_dump()
+
+
+@app.post("/runs/{run_id}/recalibrate")
+async def recalibrate(run_id: str):
+    cal = await pipeline.recalibrate_run(run_id)
+    return cal.model_dump()
 
 
 @app.get("/runs/{run_id}/report.pdf")

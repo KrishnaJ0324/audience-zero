@@ -45,6 +45,21 @@ export interface Persona {
   model: string;
   color: string;
   audience_weight: number;
+  custom?: boolean;
+  enabled?: boolean;
+  system_prompt?: string;
+}
+
+export interface PersonaDraft {
+  name: string;
+  archetype: string;
+  system_prompt: string;
+  ready: boolean;
+}
+
+export interface PersonaChatReply {
+  reply: string;
+  draft: PersonaDraft;
 }
 
 export interface BeatScore {

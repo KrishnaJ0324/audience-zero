@@ -2,6 +2,7 @@ import { useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { api } from "../api";
 import type { EvidenceKind, EvidenceSpan } from "../types";
 import type { LiveState } from "../useRun";
+import { AudioDisclosure } from "./AudioDisclosure";
 
 const KIND_COLOR: Record<EvidenceKind, string> = {
   recap: "#bd7a12", crowded: "#7b3a8c", no_hook: "#b0431d", trope: "#23406e",
@@ -140,6 +141,7 @@ export function EvidenceTimeline({
           <audio ref={audioRef} src={api.audioUrl(audioName)} controls className="ev-audio" />
         )}
       </div>
+      {audioName && <AudioDisclosure />}
 
       {/* selected evidence detail */}
       {selectedSpan && (

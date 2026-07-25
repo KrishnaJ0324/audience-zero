@@ -92,6 +92,10 @@ class PersonaConfig(BaseModel):
     audience_weight: float = 1.0
     binge_weight: float = 1.0
     color: str = "#38bdf8"
+    # user-defined personas (created at runtime, stored in the DB)
+    custom: bool = False
+    enabled: bool = True
+    created_at: str = ""
 
 
 # --------------------------------------------------------------------------- #
