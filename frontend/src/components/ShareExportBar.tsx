@@ -2,14 +2,25 @@ import { useEffect, useState } from "react";
 import { api } from "../api";
 
 /** Producer summary + read-only share link + PDF export. */
-export function ShareExportBar({ runId }: { runId: string }) {
+export function ShareExportBar({ runId, provider }: { runId: string; provider?: string }) {
   const [summary, setSummary] = useState<string>("");
   const [shareUrl, setShareUrl] = useState<string>("");
   const [copied, setCopied] = useState(false);
+  const [polishing, setPolishing] = useState(false);
 
   useEffect(() => {
     api.summary(runId).then((r) => setSummary(r.summary)).catch(() => {});
   }, [runId]);
+
+  const polish = async () => {
+    setPolishing(true);
+    try {
+      const r = await api.summary(runId, true);
+      setSummary(r.summary);
+    } finally {
+      setPolishing(false);
+    }
+  };
 
   const makeShare = async () => {
     const { path } = await api.share(runId);
@@ -33,6 +44,11 @@ export function ShareExportBar({ runId }: { runId: string }) {
         <a className="btn-link" href={api.reportPdfUrl(runId)} target="_blank" rel="noreferrer">
           ⬇ Download PDF
         </a>
+        {provider === "openai" && (
+          <button className="ghost" onClick={polish} disabled={polishing} title="Rewrite the summary with the model (uses one API call)">
+            {polishing ? "Polishing…" : "✨ Polish with AI"}
+          </button>
+        )}
       </div>
       {shareUrl && (
         <div className="row" style={{ marginTop: 10 }}>

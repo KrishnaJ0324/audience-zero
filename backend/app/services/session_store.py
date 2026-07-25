@@ -15,7 +15,7 @@ from pathlib import Path
 
 import aiosqlite
 
-from ..contracts import AnalysisRun, EpisodeMeta, Project, Version
+from ..contracts import AnalysisRun, EpisodeMeta, PersonaConfig, Project, Version
 
 _SCHEMA = """
 CREATE TABLE IF NOT EXISTS projects (
@@ -37,6 +37,9 @@ CREATE TABLE IF NOT EXISTS shares (
 );
 CREATE TABLE IF NOT EXISTS actuals (
     episode_id TEXT PRIMARY KEY, data TEXT NOT NULL
+);
+CREATE TABLE IF NOT EXISTS custom_personas (
+    id TEXT PRIMARY KEY, name TEXT, created_at TEXT, data TEXT NOT NULL
 );
 CREATE INDEX IF NOT EXISTS idx_episodes_project ON episodes(project_id);
 CREATE INDEX IF NOT EXISTS idx_versions_episode ON versions(episode_id);
@@ -171,6 +174,28 @@ class SessionStore:
     async def get_actual(self, episode_id: str) -> list[float] | None:
         row = await self._one("SELECT data FROM actuals WHERE episode_id=?", (episode_id,))
         return json.loads(row[0]) if row else None
+
+    # --- custom personas -----------------------------------------------
+    async def save_persona(self, p: PersonaConfig) -> None:
+        async with aiosqlite.connect(self.db_path) as db:
+            await db.execute(
+                "INSERT OR REPLACE INTO custom_personas (id, name, created_at, data) VALUES (?,?,?,?)",
+                (p.id, p.name, p.created_at, p.model_dump_json()),
+            )
+            await db.commit()
+
+    async def list_personas(self) -> list[PersonaConfig]:
+        rows = await self._all("SELECT data FROM custom_personas ORDER BY created_at ASC", ())
+        return [PersonaConfig.model_validate_json(r[0]) for r in rows]
+
+    async def get_persona(self, persona_id: str) -> PersonaConfig | None:
+        row = await self._one("SELECT data FROM custom_personas WHERE id=?", (persona_id,))
+        return PersonaConfig.model_validate_json(row[0]) if row else None
+
+    async def delete_persona(self, persona_id: str) -> None:
+        async with aiosqlite.connect(self.db_path) as db:
+            await db.execute("DELETE FROM custom_personas WHERE id=?", (persona_id,))
+            await db.commit()
 
     # --- helpers --------------------------------------------------------
     async def _one(self, sql: str, args: tuple):

@@ -4,6 +4,7 @@ import type { AnalysisRun, Persona } from "../types";
 import { useRun } from "../useRun";
 import { AttentionChart } from "./AttentionChart";
 import { BeforeAfterPanel } from "./BeforeAfterPanel";
+import { CalibrationOverlay } from "./CalibrationOverlay";
 import { ConfidencePanel } from "./ConfidencePanel";
 import { DiagnosticsPanel } from "./DiagnosticsPanel";
 import { EvidenceTimeline } from "./EvidenceTimeline";
@@ -104,7 +105,11 @@ export function RunView({
 
       {state.beforeAfter && <BeforeAfterPanel cmp={state.beforeAfter} />}
 
-      {hasVerdict && !readOnly && <ShareExportBar runId={runId} />}
+      {hasVerdict && (
+        <CalibrationOverlay runId={runId} calibration={state.calibration} readOnly={readOnly} />
+      )}
+
+      {hasVerdict && !readOnly && <ShareExportBar runId={runId} provider={state.provider} />}
 
       {hasVerdict && !readOnly && <PopulationSweepPanel runId={runId} autoRun={autoSweep} />}
     </div>

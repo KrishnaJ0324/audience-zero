@@ -2,6 +2,7 @@ import { useEffect, useState } from "react";
 import { api } from "./api";
 import { EpisodeView } from "./components/EpisodeView";
 import { Header } from "./components/Header";
+import { PersonasView } from "./components/PersonasView";
 import { ProjectView } from "./components/ProjectView";
 import { ProjectsView } from "./components/ProjectsView";
 import { RunView } from "./components/RunView";
@@ -22,7 +23,9 @@ export default function App() {
 
       <nav className="crumbs">
         <a className="crumb" onClick={() => go("/")}>⌂ Projects</a>
-        {route.view !== "projects" && route.view !== "shared" && (
+        <span className="crumb-sep">·</span>
+        <a className={`crumb ${route.view === "personas" ? "active" : ""}`} onClick={() => go("/personas")}>◆ Personas</a>
+        {route.view !== "projects" && route.view !== "shared" && route.view !== "personas" && (
           <>
             <span className="crumb-sep">›</span>
             <a className="crumb" onClick={() => window.history.back()}>← Back</a>
@@ -38,6 +41,7 @@ export default function App() {
 
       <div className="view">
         {route.view === "projects" && <ProjectsView go={go} />}
+        {route.view === "personas" && <PersonasView provider={provider} />}
         {route.view === "project" && <ProjectView id={route.id} go={go} />}
         {route.view === "episode" && <EpisodeView id={route.id} go={go} />}
         {route.view === "run" && <RunView key={route.id} runId={route.id} autoSweep={route.sweep} />}

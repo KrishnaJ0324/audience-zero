@@ -9,6 +9,7 @@ import asyncio
 import datetime as _dt
 import hashlib
 import json
+import re
 import secrets
 import uuid
 
@@ -19,8 +20,10 @@ from .contracts import (
     CalibrationSummary,
     Comment,
     EpisodeMeta,
+    EvidenceSpan,
     JobState,
     Project,
+    PersonaConfig,
     RevisionVariant,
     RunManifest,
     Version,
@@ -37,6 +40,12 @@ from .services.revision import RevisionService
 from .services.session_store import SessionStore
 
 _DEFAULT_PROJECT_ID = "proj_default"
+
+# palette for auto-assigned custom-persona curve colours (distinct from built-ins)
+_CUSTOM_PALETTE = [
+    "#0e7490", "#9d174d", "#4d7c0f", "#7c2d12", "#1e3a8a",
+    "#a16207", "#0f766e", "#9f1239", "#3730a3", "#57534e",
+]
 
 
 def _now() -> str:
@@ -127,6 +136,59 @@ class Pipeline:
         return await self.add_audio_version(title, data, filename)
 
     # ------------------------------------------------------------------ #
+    # Persona roster (built-in + user-defined)
+    # ------------------------------------------------------------------ #
+    async def roster(self) -> list[PersonaConfig]:
+        """The panel for a run: the six built-ins plus every enabled custom
+        persona. Custom personas auto-join all new analyses."""
+        built = self.registry.load()
+        customs = [p for p in await self.store.list_personas() if p.enabled]
+        return built + customs
+
+    async def list_custom_personas(self) -> list[PersonaConfig]:
+        return await self.store.list_personas()
+
+    async def create_persona(
+        self, name: str, archetype: str, system_prompt: str,
+        model: str | None = None, color: str | None = None,
+    ) -> PersonaConfig:
+        if not (name or "").strip():
+            raise ValueError("persona needs a name")
+        if not (system_prompt or "").strip():
+            raise ValueError("persona needs prompt text")
+        customs = await self.store.list_personas()
+        used = {p.color for p in customs} | {p.color for p in self.registry.load()}
+        if not color:
+            color = next((c for c in _CUSTOM_PALETTE if c not in used),
+                         _CUSTOM_PALETTE[len(customs) % len(_CUSTOM_PALETTE)])
+        slug = re.sub(r"[^a-z0-9]+", "_", name.lower()).strip("_")[:20] or "voice"
+        persona = PersonaConfig(
+            id=_sid("cp"), name=name.strip(),
+            archetype=(archetype or "Custom listener").strip(),
+            model=model or self.s.default_persona_model,
+            system_prompt=system_prompt.strip(),
+            voice_id=f"{slug}_voice", color=color,
+            custom=True, enabled=True, created_at=_now(),
+        )
+        await self.store.save_persona(persona)
+        return persona
+
+    async def delete_persona(self, persona_id: str) -> None:
+        p = await self.store.get_persona(persona_id)
+        if not p:
+            raise ValueError("custom persona not found")
+        await self.store.delete_persona(persona_id)
+
+    async def chat_persona(self, messages: list[dict]) -> dict:
+        """Multi-turn persona designer. Returns {reply, draft}. Uses the model
+        when a key is present; otherwise a deterministic template assistant
+        (both providers implement ``chat_persona``)."""
+        fn = getattr(self.providers.llm, "chat_persona", None)
+        if fn is None:
+            raise ValueError("persona chat is unavailable for this provider")
+        return await fn(messages)
+
+    # ------------------------------------------------------------------ #
     # Analysis run
     # ------------------------------------------------------------------ #
     def new_run_id(self) -> str:
@@ -161,7 +223,7 @@ class Pipeline:
         self, version: Version, run_id: str, parent_run_id: str | None = None,
         speak_verdicts: int = 2,
     ) -> AnalysisRun:
-        personas = self.registry.load()
+        personas = await self.roster()
         started = _now()
         run = AnalysisRun(
             id=run_id, project_id=version.project_id, episode_id=version.episode_id,
@@ -185,6 +247,7 @@ class Pipeline:
             verdict = verdict_engine.judge(reports, personas, len(version.beats))
             conf = analysis.confidence(reports, len(version.beats), len(personas))
             spans, diagnostics = evidence.spans_and_diagnostics(version, reports, verdict, personas)
+            spans = await self._enrich_evidence(version, verdict, diagnostics, spans)
             actual = await self.store.get_actual(version.episode_id)
             calibration = analysis.calibrate(verdict.retention_curve, actual)
 
@@ -230,6 +293,40 @@ class Pipeline:
             await self.bus.publish(Event(type="error", run_id=run_id, data={"error": str(exc)}))
             raise
 
+    async def _enrich_evidence(self, version, verdict, diagnostics, spans):
+        """Model-enriched evidence (behind key): ask the LLM to cite verbatim
+        spans on the weakest beat. Deterministic heuristic spans always remain;
+        this only adds source='model' spans, and any failure is swallowed."""
+        cite = getattr(self.providers.llm, "cite_evidence", None)
+        if self.providers.kind != "openai" or cite is None or not verdict:
+            return spans
+        wb = next((b for b in version.beats if b.index == verdict.weakest_beat), None)
+        if not wb:
+            return spans
+        top = next((d for d in diagnostics if d.beat_index == wb.index), None)
+        reason = top.summary if top else "boring or repetitive"
+        kind = top.type if top else "boredom"
+        try:
+            quotes = await cite(wb.text, reason)
+        except Exception:
+            return spans
+        for i, q in enumerate(quotes):
+            idx = wb.text.lower().find(str(q).lower())
+            if idx < 0:
+                continue
+            tl = len(wb.text)
+            frac = idx / max(tl, 1)
+            span = wb.end_s - wb.start_s
+            spans.append(EvidenceSpan(
+                id=f"ev_{wb.index}_model_{i}", beat_index=wb.index,
+                kind=kind if kind in ("recap", "crowded", "no_hook", "trope", "boredom", "hook", "payoff") else "boredom",
+                char_start=idx, char_end=min(tl, idx + len(q)),
+                start_s=round(wb.start_s + frac * span, 2),
+                end_s=round(wb.start_s + (min(tl, idx + len(q)) / max(tl, 1)) * span, 2),
+                quote=wb.text[idx:idx + len(q)][:160], persona_ids=[], source="model",
+            ))
+        return spans
+
     async def retry_run(self, run_id: str) -> str:
         """Re-enqueue a failed run's analysis on the same version."""
         run = await self.store.get_run(run_id)
@@ -257,7 +354,7 @@ class Pipeline:
         await self.bus.publish(Event(type="revision_started", run_id=run_id,
                                      data={"beat_index": target_beat, "target": target}))
         scene = await self.revision.revise(beat, run.reports, target_beat, mode=target)
-        personas = self.registry.load()
+        personas = await self.roster()
         voice_map = {p.name.upper(): p.voice_id for p in personas}
         produced = await self.audio.produce_scene(scene, voice_map)
 
@@ -279,6 +376,19 @@ class Pipeline:
                                      data={"scene": scene.model_dump()}))
         await self.bus.publish(Event(type="audio_ready", run_id=run_id,
                                      data={"produced_audio": produced.model_dump()}))
+        return run
+
+    async def set_variant_consent(self, run_id: str, variant_id: str, consent: str) -> AnalysisRun:
+        run = await self.store.get_run(run_id)
+        if not run:
+            raise ValueError("run not found")
+        v = next((x for x in run.revision_variants if x.id == variant_id), None)
+        if not v:
+            raise ValueError("variant not found")
+        v.disclosure.voice_consent = consent  # type: ignore[assignment]
+        await self.store.save_run(run)
+        await self.bus.publish(Event(type="variant_updated", run_id=run_id,
+                                     data={"variant_id": variant_id, "consent": consent}))
         return run
 
     async def set_variant_status(self, run_id: str, variant_id: str, status: str, notes: str = "") -> AnalysisRun:
@@ -357,6 +467,21 @@ class Pipeline:
         await self.store.save_run(run)
         return cal
 
+    async def attach_actual_for_run(self, run_id: str, retention: list[float]) -> CalibrationSummary:
+        run = await self.store.get_run(run_id)
+        if not run:
+            raise ValueError("run not found")
+        await self.store.save_actual(run.episode_id, [max(0.0, min(1.0, float(x))) for x in retention])
+        return await self.recalibrate_run(run_id)
+
+    async def simulate_actual_for_run(self, run_id: str) -> CalibrationSummary:
+        run = await self.store.get_run(run_id)
+        if not run or not run.verdict:
+            raise ValueError("run not found or has no verdict")
+        actual = analysis.simulate_actual(run.verdict.retention_curve, run.episode_id)
+        await self.store.save_actual(run.episode_id, actual)
+        return await self.recalibrate_run(run_id)
+
     # ------------------------------------------------------------------ #
     # Diagnostics collaboration
     # ------------------------------------------------------------------ #
@@ -408,5 +533,5 @@ class Pipeline:
         version = await self.store.get_version(run.version_id)
         if not version:
             raise ValueError("version not found")
-        personas = self.registry.load()
+        personas = await self.roster()
         return population_sweep.sweep(version, personas, n=n)

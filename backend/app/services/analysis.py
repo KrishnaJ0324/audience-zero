@@ -6,6 +6,7 @@ assemble the frozen AnalysisRun payload.
 """
 from __future__ import annotations
 
+import hashlib
 import math
 
 from ..contracts import CalibrationSummary, Confidence, PersonaReport
@@ -72,6 +73,23 @@ def _pearson(a: list[float], b: list[float]) -> float | None:
         return None
     cov = sum((a[i] - ma) * (b[i] - mb) for i in range(n))
     return round(cov / math.sqrt(va * vb), 3)
+
+
+def simulate_actual(predicted_retention: list[float], seed_key: str) -> list[float]:
+    """Deterministically fabricate a plausible 'actual' retention curve for the
+    demo: real audiences track the prediction but drift (and tend to drop a bit
+    *more* than predicted). Jitter is a stable hash of (seed_key, beat), and the
+    result is clamped to a monotonically non-increasing curve in [0, 1]."""
+    out: list[float] = []
+    running = 1.0
+    for i, p in enumerate(predicted_retention):
+        h = int(hashlib.sha256(f"{seed_key}|{i}".encode()).hexdigest()[:8], 16)
+        unit = (h % 10_000) / 10_000.0            # 0..1
+        jitter = (unit - 0.35) * 0.30             # biased slightly negative
+        val = max(0.0, min(1.0, p * (1.0 + jitter)))
+        running = min(running, val)               # enforce monotonic decline
+        out.append(round(running, 4))
+    return out
 
 
 def calibrate(

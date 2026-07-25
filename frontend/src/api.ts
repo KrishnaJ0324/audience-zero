@@ -1,11 +1,13 @@
 import type {
   AnalysisRun,
   BeforeAfter,
+  CalibrationSummary,
   Diagnostic,
   EpisodeMeta,
   PopulationSweep,
   Project,
   Persona,
+  PersonaChatReply,
   Version,
 } from "./types";
 
@@ -31,6 +33,12 @@ export const api = {
 
   health: () => fetch(`${BASE}/health`).then((r) => j<{ provider: string }>(r)),
   personas: () => fetch(`${BASE}/personas`).then((r) => j<Persona[]>(r)),
+  createPersona: (body: { name: string; archetype: string; system_prompt: string; model?: string; color?: string }) =>
+    postJson(`/personas`, body).then((r) => j<Persona>(r)),
+  deletePersona: (id: string) =>
+    fetch(`${BASE}/personas/${id}`, { method: "DELETE" }).then((r) => j<{ deleted: string }>(r)),
+  personaChat: (messages: { role: string; content: string }[]) =>
+    postJson(`/personas/chat`, { messages }).then((r) => j<PersonaChatReply>(r)),
   scripts: () =>
     fetch(`${BASE}/scripts`).then((r) => j<{ name: string; text: string }[]>(r)),
 
@@ -95,6 +103,10 @@ export const api = {
     postJson(`/runs/${runId}/variants/${variantId}/status`, { status, notes }).then((r) =>
       j<AnalysisRun>(r)
     ),
+  variantConsent: (runId: string, variantId: string, consent: string) =>
+    postJson(`/runs/${runId}/variants/${variantId}/consent`, { consent }).then((r) =>
+      j<AnalysisRun>(r)
+    ),
   rerun: (runId: string, variant?: string) => {
     const q = variant ? `?variant=${variant}` : "";
     return postJson(`/runs/${runId}/rerun${q}`).then((r) =>
@@ -125,9 +137,17 @@ export const api = {
     fetch(`${BASE}/shared/${token}`).then((r) =>
       j<{ read_only: boolean; run: AnalysisRun; summary: string }>(r)
     ),
-  summary: (runId: string) =>
-    fetch(`${BASE}/runs/${runId}/summary`).then((r) => j<{ summary: string }>(r)),
+  summary: (runId: string, enrich = false) =>
+    fetch(`${BASE}/runs/${runId}/summary${enrich ? "?enrich=1" : ""}`).then((r) =>
+      j<{ summary: string; enriched?: boolean }>(r)
+    ),
   reportPdfUrl: (runId: string) => `${BASE}/runs/${runId}/report.pdf`,
+
+  // calibration (prediction vs actual)
+  calibrate: (runId: string, retention: number[]) =>
+    postJson(`/runs/${runId}/calibrate`, { retention }).then((r) => j<CalibrationSummary>(r)),
+  simulateCalibration: (runId: string) =>
+    postJson(`/runs/${runId}/calibrate/simulate`).then((r) => j<CalibrationSummary>(r)),
 
   // audio / waveform
   eventsUrl: (runId: string) => `${BASE}/runs/${runId}/events`,
