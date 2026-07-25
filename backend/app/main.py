@@ -103,6 +103,15 @@ async def sse_counter():
     return EventSourceResponse(gen())
 
 
+def _persona_dto(p) -> dict:
+    """Serialise a PersonaConfig for the API (built-in or custom)."""
+    return {
+        "id": p.id, "name": p.name, "archetype": p.archetype, "model": p.model,
+        "color": p.color, "audience_weight": p.audience_weight,
+        "custom": p.custom, "enabled": p.enabled, "system_prompt": p.system_prompt,
+    }
+
+
 @app.get("/personas")
 async def personas() -> list[dict]:
     """The persona library — every definition (built-in + custom). Enablement is
