@@ -8,11 +8,13 @@ only when an API key is present, otherwise ``mock``.
 """
 from __future__ import annotations
 
+import json
 import os
 from functools import lru_cache
 from pathlib import Path
 from typing import Literal
 
+from pydantic import Field
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 BACKEND_ROOT = Path(__file__).resolve().parent.parent
@@ -24,6 +26,9 @@ class Settings(BaseSettings):
         env_file=(PROJECT_ROOT / ".env", BACKEND_ROOT / ".env"),
         env_prefix="AZ_",
         extra="ignore",
+        # fields carrying a validation_alias (cors_origins_raw) would otherwise
+        # be unsettable by their Python name, including from tests
+        populate_by_name=True,
     )
 
     # --- providers ------------------------------------------------------
@@ -66,7 +71,44 @@ class Settings(BaseSettings):
     max_beats: int = 15
 
     # --- server ---------------------------------------------------------
-    cors_origins: list[str] = ["http://localhost:5173", "http://127.0.0.1:5173"]
+    # Kept as a raw string on purpose. pydantic-settings decodes a `list[str]`
+    # env var as JSON *inside the settings source*, before any validator runs —
+    # so `AZ_CORS_ORIGINS=https://app.example.com` raised SettingsError and the
+    # whole service refused to boot. A CORS typo must not be able to take the
+    # API down, so parsing happens in `cors_origins` below instead.
+    cors_origins_raw: str = Field(
+        default="http://localhost:5173,http://127.0.0.1:5173",
+        # validation_alias bypasses env_prefix, so this is the full env name.
+        validation_alias="AZ_CORS_ORIGINS",
+    )
+
+    @property
+    def cors_origins(self) -> list[str]:
+        """Allowed browser origins, from a JSON array, a comma-separated list,
+        or a single bare origin — whichever the operator happened to type.
+
+        Trailing slashes are stripped because CORS compares the `Origin` header
+        exactly, and `https://app.example.com/` never matches a real origin.
+        """
+        raw = (self.cors_origins_raw or "").strip()
+        if not raw:
+            return []
+        if raw.startswith("["):
+            try:
+                loaded = json.loads(raw)
+                items = [str(x) for x in loaded] if isinstance(loaded, list) else [raw]
+            except ValueError:
+                # malformed array (e.g. a missing quote) — salvage it rather
+                # than refusing to start
+                items = raw.strip("[]").split(",")
+        else:
+            items = raw.split(",")
+        out: list[str] = []
+        for item in items:
+            origin = item.strip().strip('"').strip("'").rstrip("/")
+            if origin and origin not in out:
+                out.append(origin)
+        return out
 
     @property
     def resolved_provider(self) -> Literal["mock", "openai"]:
