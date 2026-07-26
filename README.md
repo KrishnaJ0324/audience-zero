@@ -122,7 +122,12 @@ A producer can:
   every new analysis** — appearing in the attention graph, persona cards,
   verdict, evidence, and sweep. With an OpenAI key the model reads the custom
   prompt so it scores distinctively; offline it uses a neutral profile (the app
-  says so). Built-ins are always on and can't be deleted.
+  says so). Custom personas can be deleted from the library (`#/personas`).
+- **Per-project panel selection** — each project has its own **Test panel**: a
+  persistent on/off switch per persona (built-in and custom). Only the enabled
+  ones test that project's episodes, and the selection sticks per project (new
+  projects default to all on; at least one must stay enabled). Toggling a persona
+  in Project A doesn't affect Project B.
 
 Everything stays **mock-first / offline**; the dev SQLite DB is disposable
 (re-seed with `scripts/seed_demo.py`). Deep-links: `#/run/:id`,

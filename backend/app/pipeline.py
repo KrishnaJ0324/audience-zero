@@ -138,12 +138,34 @@ class Pipeline:
     # ------------------------------------------------------------------ #
     # Persona roster (built-in + user-defined)
     # ------------------------------------------------------------------ #
-    async def roster(self) -> list[PersonaConfig]:
-        """The panel for a run: the six built-ins plus every enabled custom
-        persona. Custom personas auto-join all new analyses."""
+    async def all_personas(self, project_id: str | None = None) -> list[PersonaConfig]:
+        """Every persona definition in the workspace (built-in + custom). When a
+        ``project_id`` is given, each persona's ``enabled`` reflects that
+        project's selection (default on); without one it's the plain library."""
         built = self.registry.load()
-        customs = [p for p in await self.store.list_personas() if p.enabled]
-        return built + customs
+        customs = await self.store.list_personas()
+        defs = [*built, *customs]
+        if not project_id:
+            return [p.model_copy(update={"enabled": True}) for p in defs]
+        states = await self.store.project_persona_states(project_id)
+        return [p.model_copy(update={"enabled": states.get(p.id, True)}) for p in defs]
+
+    async def roster(self, project_id: str) -> list[PersonaConfig]:
+        """The panel a run in this project actually uses: only enabled personas."""
+        return [p for p in await self.all_personas(project_id) if p.enabled]
+
+    async def set_persona_enabled(
+        self, project_id: str, persona_id: str, enabled: bool
+    ) -> list[PersonaConfig]:
+        all_p = await self.all_personas(project_id)
+        if persona_id not in {p.id for p in all_p}:
+            raise ValueError("persona not found")
+        if not enabled:
+            still_on = [p.id for p in all_p if p.enabled and p.id != persona_id]
+            if not still_on:
+                raise ValueError("at least one persona must stay enabled")
+        await self.store.set_project_persona_enabled(project_id, persona_id, enabled)
+        return await self.all_personas(project_id)
 
     async def list_custom_personas(self) -> list[PersonaConfig]:
         return await self.store.list_personas()
@@ -223,7 +245,7 @@ class Pipeline:
         self, version: Version, run_id: str, parent_run_id: str | None = None,
         speak_verdicts: int = 2,
     ) -> AnalysisRun:
-        personas = await self.roster()
+        personas = await self.roster(version.project_id or _DEFAULT_PROJECT_ID)
         started = _now()
         run = AnalysisRun(
             id=run_id, project_id=version.project_id, episode_id=version.episode_id,
@@ -272,6 +294,7 @@ class Pipeline:
                 (_dt.datetime.fromisoformat(run.run_manifest.finished_at)
                  - _dt.datetime.fromisoformat(started)).total_seconds(), 2)
             run.job = JobState(status="complete", stage="done", progress=1.0, attempts=run.job.attempts)
+            run.status = "complete"  # keep the legacy mirror in sync for lists/polling
             await self.store.save_run(run)
 
             await self.bus.publish(Event(type="verdict_ready", run_id=run_id,
@@ -288,6 +311,7 @@ class Pipeline:
         except Exception as exc:  # noqa: BLE001
             run.job = JobState(status="failed", stage=run.job.stage, error=str(exc)[:300],
                                attempts=run.job.attempts)
+            run.status = "failed"
             await self.store.save_run(run)
             await self._emit_job(run)
             await self.bus.publish(Event(type="error", run_id=run_id, data={"error": str(exc)}))
@@ -354,7 +378,7 @@ class Pipeline:
         await self.bus.publish(Event(type="revision_started", run_id=run_id,
                                      data={"beat_index": target_beat, "target": target}))
         scene = await self.revision.revise(beat, run.reports, target_beat, mode=target)
-        personas = await self.roster()
+        personas = await self.roster(run.project_id or _DEFAULT_PROJECT_ID)
         voice_map = {p.name.upper(): p.voice_id for p in personas}
         produced = await self.audio.produce_scene(scene, voice_map)
 
@@ -533,5 +557,5 @@ class Pipeline:
         version = await self.store.get_version(run.version_id)
         if not version:
             raise ValueError("version not found")
-        personas = await self.roster()
+        personas = await self.roster(run.project_id or _DEFAULT_PROJECT_ID)
         return population_sweep.sweep(version, personas, n=n)

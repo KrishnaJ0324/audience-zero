@@ -176,9 +176,13 @@ export function useRun() {
   }, [close]);
 
   /** Populate full state from a persisted run + its version (deep-link/replay). */
-  const loadStatic = useCallback((run: AnalysisRun, version: Version | null, personas: Persona[]) => {
+  const loadStatic = useCallback((run: AnalysisRun, version: Version | null, allPersonas: Persona[]) => {
     close();
     const reports = run.reports ?? [];
+    // show exactly the personas that participated in THIS run (not the current
+    // global selection), preserving the run's manifest order.
+    const reportIds = new Set(reports.map((r) => r.persona_id));
+    const personas = reports.length ? allPersonas.filter((p) => reportIds.has(p.id)) : allPersonas;
     const acceptedBA =
       (run.revision_variants ?? []).find((v) => v.status === "accepted" && v.before_after)?.before_after ??
       (run.revision_variants ?? []).find((v) => v.before_after)?.before_after ??

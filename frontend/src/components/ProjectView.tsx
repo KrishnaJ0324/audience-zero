@@ -1,7 +1,9 @@
 import { useEffect, useState } from "react";
 import { api } from "../api";
 import type { EpisodeMeta, Project } from "../types";
+import { PersonaPanel } from "./PersonaPanel";
 import { ScriptInput } from "./ScriptInput";
+import { notifyDataChanged } from "./Sidebar";
 
 /** A project: its episodes + a "new episode" ingest. */
 export function ProjectView({ id, go }: { id: string; go: (to: string) => void }) {
@@ -19,6 +21,7 @@ export function ProjectView({ id, go }: { id: string; go: (to: string) => void }
     try {
       const { episode, version } = await api.createEpisodeInProject(id, title, text);
       const { run_id } = await api.analyze(version.id);
+      notifyDataChanged();
       go(`/run/${run_id}`);
       void episode;
     } catch (e: any) { setErr(e.message); } finally { setBusy(false); }
@@ -29,6 +32,7 @@ export function ProjectView({ id, go }: { id: string; go: (to: string) => void }
     try {
       const { version } = await api.createEpisodeAudioInProject(id, title, file);
       const { run_id } = await api.analyze(version.id);
+      notifyDataChanged();
       go(`/run/${run_id}`);
     } catch (e: any) { setErr(e.message); } finally { setBusy(false); }
   };
@@ -40,6 +44,7 @@ export function ProjectView({ id, go }: { id: string; go: (to: string) => void }
         {err && <div className="card"><div className="error">⚠ {err}</div></div>}
       </div>
       <div className="stack">
+        <PersonaPanel projectId={id} />
         <div className="card">
           <h2 data-idx="§">
             {project?.name ?? "Project"}
@@ -52,7 +57,7 @@ export function ProjectView({ id, go }: { id: string; go: (to: string) => void }
                 <div className="h-title">{e.title}</div>
                 <div className="timeline-tag">episode · {e.id}</div>
               </div>
-              <span className="mono" style={{ color: "var(--danger)" }}>→</span>
+              <span className="mono" style={{ color: "var(--accent)" }}>→</span>
             </div>
           ))}
         </div>

@@ -60,8 +60,8 @@ export function AttentionChart({ state, showAggregate = true }: Props) {
             {showAggregate && (
               <defs>
                 <linearGradient id="disBand" x1="0" y1="0" x2="0" y2="1">
-                  <stop offset="0%" stopColor="var(--danger)" stopOpacity={0.14} />
-                  <stop offset="100%" stopColor="var(--danger)" stopOpacity={0.02} />
+                  <stop offset="0%" stopColor="var(--accent)" stopOpacity={0.22} />
+                  <stop offset="100%" stopColor="var(--accent)" stopOpacity={0.02} />
                 </linearGradient>
               </defs>
             )}
@@ -91,12 +91,12 @@ export function AttentionChart({ state, showAggregate = true }: Props) {
             {weakest !== undefined && beats[weakest] && (
               <ReferenceLine
                 x={`B${weakest + 1}`}
-                stroke="var(--danger)"
+                stroke="var(--accent)"
                 strokeDasharray="4 4"
                 strokeOpacity={0.6}
                 label={{
                   value: "weakest beat",
-                  fill: "var(--danger)",
+                  fill: "var(--accent)",
                   fontSize: 10,
                   fontFamily: "var(--mono)",
                   position: "top",
@@ -174,7 +174,7 @@ export function AttentionChart({ state, showAggregate = true }: Props) {
         )}
         {showAggregate && verdict && (
           <span className="item" title="Spread of engagement across the six listeners">
-            <span className="swatch" style={{ background: "var(--danger)", opacity: 0.3, height: 8 }} />
+            <span className="swatch" style={{ background: "var(--accent)", opacity: 0.35, height: 8 }} />
             Disagreement
           </span>
         )}

@@ -76,7 +76,7 @@ export function EpisodeView({ id, go }: { id: string; go: (to: string) => void }
                   {r.confidence ? ` · ${r.confidence.label} confidence` : ""}
                 </div>
               </div>
-              <span className="mono" style={{ color: "var(--danger)" }}>→</span>
+              <span className="mono" style={{ color: "var(--accent)" }}>→</span>
             </div>
           ))}
         </div>

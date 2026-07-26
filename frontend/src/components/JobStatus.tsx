@@ -1,7 +1,7 @@
 import type { Connection, LiveState } from "../useRun";
 
 const STAGE_LABEL: Record<string, string> = {
-  scoring: "Six agents scoring in parallel",
+  scoring: "Agents scoring in parallel",
   verdict: "Computing the verdict",
   producing: "Producing spoken verdicts",
   done: "Complete",
