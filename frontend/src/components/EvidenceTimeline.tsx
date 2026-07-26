@@ -4,14 +4,40 @@ import type { EvidenceKind, EvidenceSpan } from "../types";
 import type { LiveState } from "../useRun";
 import { AudioDisclosure } from "./AudioDisclosure";
 
+/**
+ * Kind colours for the light theme. Hue encodes category — warm = a problem
+ * (severity descending: rose → orange → amber), green = a win, cyan = a pacing
+ * observation, slate = neutral craft note. Every value clears 4.5:1 on both
+ * --panel (#fff, where the chips sit) and --paper (#f5f7fa, behind .ev-detail),
+ * which the old beige-era palette did not.
+ */
 const KIND_COLOR: Record<EvidenceKind, string> = {
-  recap: "#bd7a12", crowded: "#7b3a8c", no_hook: "#b0431d", trope: "#23406e",
-  boredom: "#ce381d", hook: "#1f7a5e", payoff: "#2f6a4b",
+  boredom: "#b3243c", no_hook: "#c2410c", recap: "#b45309",
+  crowded: "#0e7490", trope: "#475569",
+  hook: "#0b7a52", payoff: "#15803d",
 };
 const KIND_LABEL: Record<EvidenceKind, string> = {
   recap: "recap", crowded: "crowded", no_hook: "weak hook", trope: "cliché",
   boredom: "dead air", hook: "strong hook", payoff: "payoff",
 };
+
+const NO_PERSONA = "var(--muted-2)";
+
+/**
+ * A span is identified by *who* flagged it, so ticks and highlights carry the
+ * persona colour (the kind stays legible in the label and chips). Spans nobody
+ * owns — panel-wide observations — fall back to neutral grey.
+ */
+function spanFill(colors: string[]): string {
+  if (colors.length === 0) return NO_PERSONA;
+  if (colors.length === 1) return colors[0];
+  // split the bar into equal hard-stop bands, one per flagging persona
+  const stops = colors.flatMap((c, i) => [
+    `${c} ${((i / colors.length) * 100).toFixed(2)}%`,
+    `${c} ${(((i + 1) / colors.length) * 100).toFixed(2)}%`,
+  ]);
+  return `linear-gradient(90deg, ${stops.join(", ")})`;
+}
 
 /**
  * Evidence Timeline — inspect where and why the episode loses listeners.
@@ -36,13 +62,28 @@ export function EvidenceTimeline({
 
   const duration = beats.length ? beats[beats.length - 1].end_s || 1 : 1;
 
+  // filtering to one persona means *only* what they flagged — panel-wide spans
+  // (no persona_ids) belong to "all listeners", not to any single listener
   const spans = useMemo(
     () =>
-      evidenceSpans.filter(
-        (s) => !personaFilter || s.persona_ids.includes(personaFilter) || s.persona_ids.length === 0
-      ),
+      personaFilter
+        ? evidenceSpans.filter((s) => s.persona_ids.includes(personaFilter))
+        : evidenceSpans,
     [evidenceSpans, personaFilter]
   );
+
+  // Resolve a span's flagging personas to their catalog colours. Under a filter
+  // the span is narrowed to that persona, so a co-flagged span shows only their
+  // colour instead of the whole multi-persona gradient.
+  const colorsFor = useMemo(() => {
+    const byId = new Map(personas.map((p) => [p.id, p.color]));
+    return (s: EvidenceSpan) => {
+      const ids = personaFilter
+        ? s.persona_ids.filter((id) => id === personaFilter)
+        : s.persona_ids;
+      return ids.map((id) => byId.get(id)).filter((c): c is string => !!c);
+    };
+  }, [personas, personaFilter]);
 
   // waveform (audio versions / produced clips)
   useEffect(() => {
@@ -59,7 +100,7 @@ export function EvidenceTimeline({
     const h = (cv.height = 120);
     ctx.clearRect(0, 0, w, h);
     const mid = h / 2;
-    ctx.fillStyle = "#c9bfa8";
+    ctx.fillStyle = "#aab4c6";
     if (peaks.length) {
       const bw = w / peaks.length;
       for (let i = 0; i < peaks.length; i++) {
@@ -78,7 +119,9 @@ export function EvidenceTimeline({
     el?.scrollIntoView({ behavior: "smooth", block: "center" });
   };
 
-  const selectedSpan = evidenceSpans.find((s) => s.id === selected) || null;
+  // read from the filtered set so the detail panel can't linger on a span the
+  // current filter has hidden
+  const selectedSpan = spans.find((s) => s.id === selected) || null;
 
   if (!beats.length) return null;
 
@@ -127,12 +170,15 @@ export function EvidenceTimeline({
         {spans.map((s) => {
           const left = ((s.start_s ?? 0) / duration) * 100;
           const width = Math.max(0.6, (((s.end_s ?? 0) - (s.start_s ?? 0)) / duration) * 100);
+          const who = s.persona_ids
+            .map((id) => personas.find((p) => p.id === id)?.name)
+            .filter(Boolean);
           return (
             <button
               key={s.id}
               className={`ev-tick ${selected === s.id ? "sel" : ""}`}
-              style={{ left: `${left}%`, width: `${width}%`, background: KIND_COLOR[s.kind] }}
-              title={`${KIND_LABEL[s.kind]} — “${s.quote}”`}
+              style={{ left: `${left}%`, width: `${width}%`, background: spanFill(colorsFor(s)) }}
+              title={`${who.length ? who.join(", ") : "panel"} · ${KIND_LABEL[s.kind]} — “${s.quote}”`}
               onClick={() => selectSpan(s)}
             />
           );
@@ -145,15 +191,27 @@ export function EvidenceTimeline({
 
       {/* selected evidence detail */}
       {selectedSpan && (
-        <div className="ev-detail fade-in" style={{ borderColor: KIND_COLOR[selectedSpan.kind] }}>
+        <div
+          className="ev-detail fade-in"
+          style={{ borderLeftColor: colorsFor(selectedSpan)[0] ?? NO_PERSONA }}
+        >
           <span className="ev-kind" style={{ color: KIND_COLOR[selectedSpan.kind] }}>
             {KIND_LABEL[selectedSpan.kind]} · beat {selectedSpan.beat_index + 1}
           </span>
           <span className="ev-quote">“{selectedSpan.quote}”</span>
           {selectedSpan.persona_ids.length > 0 && (
             <span className="ev-who">
-              flagged by {selectedSpan.persona_ids.map((id) =>
-                personas.find((p) => p.id === id)?.name ?? id).join(", ")}
+              flagged by{" "}
+              {selectedSpan.persona_ids.map((id, i) => {
+                const p = personas.find((x) => x.id === id);
+                return (
+                  <span key={id}>
+                    {i > 0 && ", "}
+                    <span className="swatch-dot" style={{ background: p?.color ?? NO_PERSONA }} />
+                    {p?.name ?? id}
+                  </span>
+                );
+              })}
             </span>
           )}
         </div>
@@ -180,7 +238,9 @@ export function EvidenceTimeline({
                   ))}
                 </span>
               </div>
-              <p className="ev-beat-text">{renderHighlighted(b.text, beatSpans, selected, selectSpan)}</p>
+              <p className="ev-beat-text">
+                {renderHighlighted(b.text, beatSpans, selected, selectSpan, colorsFor)}
+              </p>
             </div>
           );
         })}
@@ -193,7 +253,8 @@ function renderHighlighted(
   text: string,
   beatSpans: EvidenceSpan[],
   selected: string | null,
-  onClick: (s: EvidenceSpan) => void
+  onClick: (s: EvidenceSpan) => void,
+  colorsFor: (s: EvidenceSpan) => string[]
 ) {
   if (!beatSpans.length) return text;
   const ordered = [...beatSpans].sort((a, b) => a.char_start - b.char_start);
@@ -208,7 +269,7 @@ function renderHighlighted(
         <mark
           key={s.id + idx}
           className={`ev-mark ${selected === s.id ? "sel" : ""}`}
-          style={{ ["--k" as any]: KIND_COLOR[s.kind] }}
+          style={{ ["--k" as any]: colorsFor(s)[0] ?? NO_PERSONA }}
           onClick={() => onClick(s)}
         >
           {text.slice(cs, ce)}

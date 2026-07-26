@@ -1,23 +1,24 @@
 @import url("https://fonts.googleapis.com/css2?family=Bricolage+Grotesque:opsz,wght@12..96,400;12..96,500;12..96,600;12..96,700;12..96,800&family=Inter+Tight:ital,wght@0,400;0,500;0,600;0,700;1,400&family=Instrument+Serif:ital@0;1&family=JetBrains+Mono:wght@400;500;700&display=swap");
 
 :root {
-  /* modern deep-slate console with an electric violet signal */
-  --paper: #0b0d13;
-  --panel: #12151e;
-  --panel-2: #171b26;
-  --ink: #f0f2f8;
-  --ink-2: #aab2c6;
-  --muted: #7a8299;
-  --muted-2: #5a6176;
-  --rule: #1e2331;
-  --rule-strong: #2c3244;
-  --accent: #7f5af0;
-  --accent-soft: rgba(127, 90, 240, 0.16);
-  --accent-2: #2cd4bf;
-  --danger: #f4526a;
-  --danger-ink: #ff7d8f;
-  --ok: #2fd18c;
-  --warn: #f5a524;
+  /* clean light workspace — cool neutral paper, blue signal */
+  --paper: #f5f7fa;
+  --panel: #ffffff;
+  --panel-2: #eef1f6;
+  --ink: #101725;
+  --ink-2: #46536b;
+  --muted: #6a7689;
+  --muted-2: #97a1b3;
+  --rule: #e4e8ef;
+  --rule-strong: #cfd6e1;
+  --accent: #2563eb;
+  --accent-hover: #1d4ed8;
+  --accent-soft: rgba(37, 99, 235, 0.1);
+  --accent-2: #0d9488;
+  --danger: #d92b45;
+  --danger-ink: #a81830;
+  --ok: #0f8b5f;
+  --warn: #b57314;
   --signal: var(--accent);
 
   --display: "Bricolage Grotesque", "Inter Tight", system-ui, sans-serif;
@@ -28,9 +29,9 @@
   --r-sm: 8px;
   --r: 12px;
   --r-lg: 16px;
-  --shadow-1: 0 1px 2px rgba(0, 0, 0, 0.4);
-  --shadow-2: 0 8px 24px -8px rgba(0, 0, 0, 0.65);
-  --shadow-3: 0 18px 48px -16px rgba(0, 0, 0, 0.75);
+  --shadow-1: 0 1px 2px rgba(16, 23, 37, 0.05);
+  --shadow-2: 0 8px 24px -10px rgba(16, 23, 37, 0.18);
+  --shadow-3: 0 18px 44px -14px rgba(16, 23, 37, 0.22);
   --sidebar-w: 272px;
 
   /* aliases so chart components keep resolving to the palette */
@@ -39,7 +40,7 @@
   --bg-2: var(--panel-2);
   --border: var(--rule-strong);
   --border-glow: var(--rule-strong);
-  --grid: rgba(240, 242, 248, 0.07);
+  --grid: rgba(16, 23, 37, 0.08);
 }
 
 * {
@@ -58,10 +59,10 @@ body {
   font-family: var(--sans);
   font-size: 14px;
   background-color: var(--paper);
-  /* soft aurora wash instead of the old graph-paper beige */
+  /* barely-there cool wash so large empty areas aren't flat grey */
   background-image:
-    radial-gradient(900px 520px at 12% -8%, rgba(127, 90, 240, 0.16), transparent 62%),
-    radial-gradient(760px 460px at 92% 4%, rgba(44, 212, 191, 0.09), transparent 60%);
+    radial-gradient(900px 520px at 10% -10%, rgba(37, 99, 235, 0.05), transparent 60%),
+    radial-gradient(760px 460px at 95% 2%, rgba(13, 148, 136, 0.035), transparent 58%);
   background-attachment: fixed;
   -webkit-font-smoothing: antialiased;
   text-rendering: optimizeLegibility;
@@ -94,7 +95,7 @@ body {
   flex-direction: column;
   gap: 18px;
   padding: 22px 14px 18px;
-  background: rgba(11, 13, 19, 0.72);
+  background: rgba(238, 241, 246, 0.82);
   backdrop-filter: blur(14px);
   border-right: 1px solid var(--rule);
   z-index: 40;
@@ -120,7 +121,15 @@ body {
   flex: none;
   color: var(--ink);
 }
+/* stack the wordmark over the tagline — as inline spans the two ran together
+   and margin-top on .subword had no effect */
+.sb-brandtext {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+}
 .sb-brand .wordmark {
+  display: block;
   font-family: var(--display);
   font-weight: 700;
   font-size: 17px;
@@ -129,12 +138,14 @@ body {
   line-height: 1.1;
 }
 .sb-brand .subword {
+  display: block;
   font-family: var(--mono);
-  font-size: 9px;
-  letter-spacing: 0.14em;
+  font-size: 8.5px;
+  letter-spacing: 0.1em;
+  line-height: 1.3;
   text-transform: uppercase;
   color: var(--muted-2);
-  margin-top: 2px;
+  margin-top: 3px;
 }
 
 .sb-scroll {
@@ -198,10 +209,10 @@ body {
   transition: background 0.14s ease, color 0.14s ease;
 }
 .sb-item:hover:not(:disabled) {
-  background: var(--panel-2);
+  background: var(--panel);
   color: var(--ink);
   transform: none;
-  box-shadow: none;
+  box-shadow: var(--shadow-1);
 }
 .sb-item.active {
   background: var(--accent-soft);
@@ -291,9 +302,9 @@ body {
 }
 .sb-session:hover {
   border-color: var(--accent);
-  background: var(--panel-2);
+  background: var(--panel);
   transform: none;
-  box-shadow: none;
+  box-shadow: var(--shadow-2);
   color: var(--ink);
 }
 .sb-session + .sb-session {
@@ -330,7 +341,7 @@ body {
   border-radius: 50%;
   background: var(--warn);
   flex: none;
-  box-shadow: 0 0 0 0 rgba(245, 165, 36, 0.6);
+  box-shadow: 0 0 0 0 rgba(181, 115, 20, 0.5);
   animation: pulse 1.8s ease-out infinite;
 }
 .pulse.ok {
@@ -345,10 +356,10 @@ body {
 }
 @keyframes pulse {
   70% {
-    box-shadow: 0 0 0 7px rgba(245, 165, 36, 0);
+    box-shadow: 0 0 0 7px rgba(181, 115, 20, 0);
   }
   100% {
-    box-shadow: 0 0 0 0 rgba(245, 165, 36, 0);
+    box-shadow: 0 0 0 0 rgba(181, 115, 20, 0);
   }
 }
 
@@ -471,8 +482,8 @@ body {
     box-shadow: var(--shadow-3);
   }
   .sb-toggle:hover:not(:disabled) {
-    background: #8f6dff;
-    border-color: #8f6dff;
+    background: var(--accent-hover);
+    border-color: var(--accent-hover);
   }
   .sidebar.open ~ .sb-scrim,
   .sb-scrim.on {
@@ -480,7 +491,7 @@ body {
     position: fixed;
     inset: 0;
     z-index: 35;
-    background: rgba(4, 5, 9, 0.62);
+    background: rgba(16, 23, 37, 0.38);
   }
 }
 
@@ -495,7 +506,7 @@ body {
   flex-wrap: wrap;
   padding: 16px 0 14px;
   margin-bottom: 4px;
-  background: linear-gradient(var(--paper) 72%, rgba(11, 13, 19, 0));
+  background: linear-gradient(var(--paper) 72%, rgba(245, 247, 250, 0));
 }
 .topbar-spacer {
   flex: 1;
@@ -689,12 +700,12 @@ button.primary {
   background: var(--accent);
   border-color: var(--accent);
   color: #fff;
-  box-shadow: 0 6px 18px -8px rgba(127, 90, 240, 0.9);
+  box-shadow: 0 6px 16px -8px rgba(37, 99, 235, 0.75);
 }
 button.primary:hover:not(:disabled) {
-  background: #8f6dff;
-  border-color: #8f6dff;
-  box-shadow: 0 10px 24px -8px rgba(127, 90, 240, 0.95);
+  background: var(--accent-hover);
+  border-color: var(--accent-hover);
+  box-shadow: 0 10px 22px -8px rgba(37, 99, 235, 0.8);
 }
 button.danger {
   background: var(--danger);
@@ -702,8 +713,8 @@ button.danger {
   color: #fff;
 }
 button.danger:hover:not(:disabled) {
-  background: #ff6a80;
-  border-color: #ff6a80;
+  background: var(--danger-ink);
+  border-color: var(--danger-ink);
 }
 button.ghost {
   background: transparent;
@@ -835,7 +846,7 @@ button.ghost {
   padding: 15px 15px 13px 18px;
   background: var(--panel-2);
   transition: box-shadow 0.15s ease, transform 0.15s ease, opacity 0.2s ease, border-color 0.15s ease;
-  opacity: 0.55;
+  opacity: 0.6;
 }
 .persona::before {
   content: "";
@@ -1095,6 +1106,5 @@ button.ghost {
 audio {
   width: 100%;
   margin-top: 10px;
-  filter: invert(0.92) hue-rotate(180deg) contrast(0.92);
   border-radius: 99px;
 }

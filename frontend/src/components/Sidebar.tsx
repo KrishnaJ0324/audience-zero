@@ -87,9 +87,9 @@ export function Sidebar({ route, go }: { route: Route; go: (to: string) => void 
       <aside className={`sidebar ${open ? "open" : ""}`}>
         <button className="sb-brand" onClick={() => go("/")} aria-label="Audience Zero — home">
           <BrandMark />
-          <span>
+          <span className="sb-brandtext">
             <span className="wordmark">Audience Zero</span>
-            <span className="subword">synthetic test audience</span>
+            <span className="subword">Validate before you publish</span>
           </span>
         </button>
 
