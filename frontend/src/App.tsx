@@ -6,6 +6,7 @@ import { PersonasView } from "./components/PersonasView";
 import { ProjectView } from "./components/ProjectView";
 import { ProjectsView } from "./components/ProjectsView";
 import { RunView } from "./components/RunView";
+import { Sidebar } from "./components/Sidebar";
 import type { AnalysisRun } from "./types";
 import { useNav } from "./useNav";
 
@@ -17,38 +18,52 @@ export default function App() {
     api.health().then((h) => setProvider(h.provider)).catch(() => {});
   }, []);
 
+  const crumbs = (
+    <nav className="crumbs">
+      <a className="crumb" onClick={() => go("/")}>Home</a>
+      {route.view !== "projects" && (
+        <>
+          <span className="crumb-sep">/</span>
+          <span className="crumb muted">{labelFor(route.view)}</span>
+          {route.view !== "shared" && (
+            <>
+              <span className="crumb-sep">·</span>
+              <a className="crumb" onClick={() => window.history.back()}>← Back</a>
+            </>
+          )}
+        </>
+      )}
+      {route.view === "shared" && <span className="crumb muted">(read-only)</span>}
+    </nav>
+  );
+
   return (
-    <div className="app">
-      <Header provider={provider} />
+    <div className="shell">
+      <Sidebar route={route} go={go} />
 
-      <nav className="crumbs">
-        <a className="crumb" onClick={() => go("/")}>⌂ Projects</a>
-        <span className="crumb-sep">·</span>
-        <a className={`crumb ${route.view === "personas" ? "active" : ""}`} onClick={() => go("/personas")}>◆ Personas</a>
-        {route.view !== "projects" && route.view !== "shared" && route.view !== "personas" && (
-          <>
-            <span className="crumb-sep">›</span>
-            <a className="crumb" onClick={() => window.history.back()}>← Back</a>
-          </>
-        )}
-        {route.view === "shared" && (
-          <>
-            <span className="crumb-sep">›</span>
-            <span className="crumb muted">shared report (read-only)</span>
-          </>
-        )}
-      </nav>
+      <div className="main">
+        <Header provider={provider} crumbs={crumbs} />
 
-      <div className="view">
-        {route.view === "projects" && <ProjectsView go={go} />}
-        {route.view === "personas" && <PersonasView provider={provider} />}
-        {route.view === "project" && <ProjectView id={route.id} go={go} />}
-        {route.view === "episode" && <EpisodeView id={route.id} go={go} />}
-        {route.view === "run" && <RunView key={route.id} runId={route.id} autoSweep={route.sweep} />}
-        {route.view === "shared" && <SharedView token={route.token} />}
+        <div className="view">
+          {route.view === "projects" && <ProjectsView go={go} />}
+          {route.view === "personas" && <PersonasView provider={provider} />}
+          {route.view === "project" && <ProjectView id={route.id} go={go} />}
+          {route.view === "episode" && <EpisodeView id={route.id} go={go} />}
+          {route.view === "run" && <RunView key={route.id} runId={route.id} autoSweep={route.sweep} />}
+          {route.view === "shared" && <SharedView token={route.token} />}
+        </div>
       </div>
     </div>
   );
+}
+
+function labelFor(view: string) {
+  return (
+    { personas: "Personas", project: "Project", episode: "Episode", run: "Analysis run", shared: "Shared report" } as Record<
+      string,
+      string
+    >
+  )[view] ?? view;
 }
 
 function SharedView({ token }: { token: string }) {

@@ -1,88 +1,54 @@
-import { useEffect, useState } from "react";
+import { useState } from "react";
 import { api } from "../api";
-import type { Project } from "../types";
 import { ScriptInput } from "./ScriptInput";
+import { notifyDataChanged } from "./Sidebar";
 
-/** Landing view: quick analyze + projects list + create. */
+/**
+ * Landing view: quick analysis only.
+ * Projects, their episodes and the active session live in the sidebar.
+ */
 export function ProjectsView({ go }: { go: (to: string) => void }) {
-  const [projects, setProjects] = useState<Project[]>([]);
-  const [name, setName] = useState("");
   const [busy, setBusy] = useState(false);
-
-  const load = () => api.listProjects().then(setProjects).catch(() => {});
-  useEffect(() => { load(); }, []);
-
-  const create = async () => {
-    if (!name.trim()) return;
-    setBusy(true);
-    try {
-      const p = await api.createProject(name.trim());
-      setName("");
-      go(`/project/${p.id}`);
-    } finally {
-      setBusy(false);
-    }
-  };
+  const [err, setErr] = useState<string | null>(null);
 
   const quickRun = async (title: string, text: string) => {
-    setBusy(true);
+    setErr(null); setBusy(true);
     try {
       const v = await api.createEpisode(title, text); // default workspace
       const { run_id } = await api.analyze(v.id);
+      notifyDataChanged();
       go(`/run/${run_id}`);
-    } finally { setBusy(false); }
+    } catch (e: any) { setErr(e.message); } finally { setBusy(false); }
   };
+
   const quickRunAudio = async (title: string, file: File) => {
-    setBusy(true);
+    setErr(null); setBusy(true);
     try {
       const v = await api.createEpisodeAudio(title, file);
       const { run_id } = await api.analyze(v.id);
+      notifyDataChanged();
       go(`/run/${run_id}`);
-    } finally { setBusy(false); }
+    } catch (e: any) { setErr(e.message); } finally { setBusy(false); }
   };
 
   return (
-    <div className="stack">
-      <ScriptInput onRun={quickRun} onRunAudio={quickRunAudio} busy={busy} heading="Quick analysis" />
-
-      <div className="card">
-        <h2 data-idx="§">Projects</h2>
-        <div className="row">
-          <input
-            type="text"
-            placeholder="New project name…"
-            value={name}
-            onChange={(e) => setName(e.target.value)}
-            onKeyDown={(e) => e.key === "Enter" && create()}
-            style={{ flex: 1, fontFamily: "var(--sans)" }}
-          />
-          <button className="primary" onClick={create} disabled={busy || !name.trim()}>
-            + New project
-          </button>
-        </div>
+    <div className="stack home">
+      <div className="page-head">
+        <h1>Quick analysis</h1>
+        <p>
+          Paste a script or drop an audio file. A synthetic panel reads it beat by beat and reports
+          where attention drops — before a real audience ever sees it.
+        </p>
       </div>
 
-      {projects.length > 0 ? (
-        <div className="card">
-          <h2 data-idx="§">Your projects</h2>
-          {projects.map((p) => (
-            <div key={p.id} className="history-item" onClick={() => go(`/project/${p.id}`)}>
-              <div>
-                <div className="h-title">{p.name}</div>
-                <div className="timeline-tag">{p.description || "—"}</div>
-              </div>
-              <span className="mono" style={{ color: "var(--danger)" }}>→</span>
-            </div>
-          ))}
-        </div>
-      ) : (
-        <div className="card empty">
-          <div>
-            <div className="lede">No projects yet</div>
-            <div className="sub">Create a project to group your episodes, versions, and analysis runs — and keep the history when you come back.</div>
-          </div>
-        </div>
-      )}
+      <ScriptInput onRun={quickRun} onRunAudio={quickRunAudio} busy={busy} heading="Quick analysis" />
+
+      {err && <div className="card"><div className="error">⚠ {err}</div></div>}
+
+      <p className="home-hint">
+        Want the history kept? Create a project in the sidebar — episodes, versions and runs stay
+        grouped there.
+      </p>
     </div>
   );
 }
