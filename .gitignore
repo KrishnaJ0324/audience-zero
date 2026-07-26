@@ -24,4 +24,5 @@ frontend/.vite/
 plan_extracted.txt
 .DS_Store
 *.log
+.gstack/
 *.bak

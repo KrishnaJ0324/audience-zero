@@ -16,28 +16,34 @@ import uuid
 from .config import Settings, get_settings
 from .contracts import (
     AnalysisRun,
+    Beat,
     BeforeAfter,
     CalibrationSummary,
+    CharacterState,
     Comment,
     EpisodeMeta,
     EvidenceSpan,
     JobState,
+    MemorySpec,
     Project,
     PersonaConfig,
     RevisionVariant,
     RunManifest,
+    StoryNode,
+    Universe,
     Version,
 )
 from .event_bus import EventBus, bus as default_bus
 from .events import Event
 from .providers.factory import Providers, build_providers
-from .services import analysis, evidence, population_sweep, verdict_engine
+from .services import analysis, evidence, memory_bible, population_sweep, verdict_engine
 from .services.audio_production import AudioProductionService
 from .services.ingestion import IngestionService
 from .services.orchestrator import PanelOrchestrator
 from .services.persona_registry import PersonaRegistry
 from .services.revision import RevisionService
 from .services.session_store import SessionStore
+from .services.story_tree import StoryTreeService
 
 _DEFAULT_PROJECT_ID = "proj_default"
 
@@ -72,6 +78,7 @@ class Pipeline:
         self.orchestrator = PanelOrchestrator(self.providers, self.bus, self.s)
         self.revision = RevisionService(self.providers)
         self.audio = AudioProductionService(self.providers, self.s.audio_dir)
+        self.story_tree = StoryTreeService(self.providers, self.store, self.s.story_context_window)
 
     async def init(self) -> None:
         await self.store.init()
@@ -94,8 +101,11 @@ class Pipeline:
             )
         return _DEFAULT_PROJECT_ID
 
-    async def create_episode(self, project_id: str, title: str) -> EpisodeMeta:
-        e = EpisodeMeta(id=_sid("ep"), project_id=project_id, title=title or "Untitled Episode")
+    async def create_episode(self, project_id: str, title: str, sequence: int | None = None) -> EpisodeMeta:
+        if sequence is None:
+            sequence = len(await self.store.list_episodes(project_id)) + 1
+        e = EpisodeMeta(id=_sid("ep"), project_id=project_id, title=title or "Untitled Episode",
+                        sequence=sequence)
         await self.store.save_episode(e)
         return e
 
@@ -103,28 +113,47 @@ class Pipeline:
         self, title: str, text: str,
         project_id: str | None = None, episode_id: str | None = None,
         label: str = "v1", parent_version_id: str | None = None,
+        universe_id: str | None = None,
     ) -> Version:
         version = await self.ingestion.ingest_script(title, text)
-        return await self._attach_and_save(version, project_id, episode_id, label, parent_version_id)
+        return await self._attach_and_save(
+            version, project_id, episode_id, label, parent_version_id, universe_id)
 
     async def add_audio_version(
         self, title: str, data: bytes, filename: str,
         project_id: str | None = None, episode_id: str | None = None,
         label: str = "v1", parent_version_id: str | None = None,
+        universe_id: str | None = None,
     ) -> Version:
         version = await self.ingestion.ingest_audio(title, data, filename)
-        return await self._attach_and_save(version, project_id, episode_id, label, parent_version_id)
+        return await self._attach_and_save(
+            version, project_id, episode_id, label, parent_version_id, universe_id)
 
     async def _attach_and_save(
         self, version: Version, project_id: str | None, episode_id: str | None,
-        label: str, parent_version_id: str | None,
+        label: str, parent_version_id: str | None, universe_id: str | None = None,
     ) -> Version:
         pid = project_id or await self._ensure_default_project()
         eid = episode_id or (await self.create_episode(pid, version.title)).id
         version.project_id = pid
         version.episode_id = eid
         version.label = label
+
+        if universe_id is None and parent_version_id is None:
+            # Caller didn't pin a lineage/universe explicitly (the plain "add
+            # a version to this episode" path) — auto-detect a branch:
+            # altering an episode that already has a version automatically
+            # forks a new universe from whatever that version continues
+            # from. Otherwise this stays on the implicit, untagged main
+            # timeline — no manual universe bookkeeping required.
+            existing = await self.store.list_versions(eid)
+            if existing:
+                base = existing[0]
+                universe_id = (await self.create_universe(pid, "")).id
+                parent_version_id = base.parent_version_id
+
         version.parent_version_id = parent_version_id
+        version.universe_id = universe_id or ""
         await self.store.save_version(version)
         return version
 
@@ -474,6 +503,192 @@ class Pipeline:
         await self.bus.publish(Event(type="run_complete", run_id=child_id,
                                      data={"before_after": cmp.model_dump()}))
         return child, cmp
+
+    # ------------------------------------------------------------------ #
+    # Story tree (time-travel branching) — thin delegates to StoryTreeService
+    # ------------------------------------------------------------------ #
+    async def seed_story_tree(self, version_id: str) -> list:
+        version = await self.store.get_version(version_id)
+        if not version:
+            raise ValueError("version not found")
+        return await self.story_tree.seed_spine(version)
+
+    async def get_story_tree(self, version_id: str) -> list:
+        return await self.story_tree.list_tree(version_id)
+
+    async def get_story_node(self, node_id: str):
+        return await self.story_tree.get_node(node_id)
+
+    async def branch_story_node(self, node_id: str, instruction: str):
+        return await self.story_tree.branch(node_id, instruction)
+
+    async def materialize_node_to_version(self, node_id: str) -> Version:
+        node = await self.story_tree.get_node(node_id)
+        if not node:
+            raise ValueError("story node not found")
+        bare = await self.story_tree.materialize_to_version(node_id)
+        return await self._attach_and_save(
+            bare, node.project_id or None, node.episode_id or None,
+            f"branch-{node_id[-6:]}", node.root_version_id,
+        )
+
+    # ------------------------------------------------------------------ #
+    # Universes — named parallel timelines threading Versions across
+    # successive Episodes. Assignment is always explicit (producer-tagged),
+    # never inferred from parent/fix/branch relationships.
+    # ------------------------------------------------------------------ #
+    async def create_universe(self, project_id: str, name: str = "") -> Universe:
+        if not name:
+            existing = await self.store.list_universes(project_id)
+            name = f"Universe {len(existing) + 1}"
+        u = Universe(id=_sid("uni"), project_id=project_id, name=name)
+        await self.store.save_universe(u)
+        return u
+
+    async def list_universes(self, project_id: str) -> list[Universe]:
+        return await self.store.list_universes(project_id)
+
+    async def assign_universe(
+        self, version_id: str, universe_id: str | None = None,
+        new_universe_name: str | None = None,
+    ) -> Version:
+        version = await self.store.get_version(version_id)
+        if not version:
+            raise ValueError("version not found")
+        if new_universe_name is not None:
+            universe_id = (await self.create_universe(version.project_id, new_universe_name)).id
+        if not universe_id:
+            raise ValueError("universe_id or new_universe_name required")
+        version.universe_id = universe_id
+        await self.store.save_version(version)
+        return version
+
+    async def get_project_matrix(self, project_id: str) -> dict:
+        universes = await self.store.list_universes(project_id)
+        episodes = sorted(await self.store.list_episodes(project_id), key=lambda e: e.sequence)
+        versions = await self.store.list_all_versions_for_project(project_id)
+        return {"universes": universes, "episodes": episodes, "versions": versions}
+
+    async def _get_or_create_next_episode(
+        self, project_id: str, source_episode: EpisodeMeta,
+    ) -> EpisodeMeta:
+        target_seq = source_episode.sequence + 1
+        for ep in await self.store.list_episodes(project_id):
+            if ep.sequence == target_seq:
+                return ep
+        return await self.create_episode(project_id, f"Episode {target_seq}", sequence=target_seq)
+
+    async def default_continuation_for_new_episode(self, project_id: str) -> tuple[str | None, str | None]:
+        """(parent_version_id, universe_id) that auto-chain a brand-new
+        episode's first version onto the project's main timeline — episodes
+        grow linearly by default; branching only happens when an EXISTING
+        episode is altered (see ``_attach_and_save``). Returns (None, None)
+        for a project's very first episode, since there's nothing yet to
+        chain onto."""
+        episodes = sorted(await self.store.list_episodes(project_id), key=lambda e: e.sequence)
+        for ep in reversed(episodes):
+            versions = await self.store.list_versions(ep.id)
+            if not versions:
+                continue
+            main = next((v for v in versions if not v.universe_id), versions[0])
+            return main.id, (main.universe_id or None)
+        return None, None
+
+    async def continue_universe(
+        self, source_version_id: str, instruction: str | None = None,
+        target_episode_id: str | None = None, new_universe_name: str | None = None,
+    ) -> dict:
+        """Continue ``source``'s own universe forward by default. When
+        ``new_universe_name`` is given, this FORKS instead: a brand-new
+        universe is minted and the child's parent_version_id still points at
+        ``source`` — so one version can be the parent of several children,
+        each starting its own universe (real branching, not just parallel
+        pre-assigned lanes)."""
+        source = await self.store.get_version(source_version_id)
+        if not source:
+            raise ValueError("version not found")
+
+        if new_universe_name is not None:
+            universe_id = (await self.create_universe(source.project_id, new_universe_name)).id
+        else:
+            # Continuing an untagged version just keeps growing the implicit
+            # main timeline — no universe was ever required to do that.
+            universe_id = source.universe_id
+
+        source_episode = await self.store.get_episode(source.episode_id)
+        if not source_episode:
+            raise ValueError("source episode not found")
+
+        if target_episode_id:
+            target_episode = await self.store.get_episode(target_episode_id)
+            if not target_episode or target_episode.project_id != source.project_id:
+                raise ValueError("target episode not found in this project")
+        else:
+            target_episode = await self._get_or_create_next_episode(source.project_id, source_episode)
+
+        # idempotent: this universe already has a version in the target episode
+        for v in await self.store.list_versions(target_episode.id):
+            if v.universe_id == universe_id:
+                return {"episode": target_episode, "version": v, "node": None}
+
+        if not instruction:
+            # caller routes the producer to the existing paste-script flow,
+            # tagged with universe_id + parent — no version fabricated here.
+            return {"episode": target_episode, "version": None, "node": None}
+
+        spine = await self.seed_story_tree(source_version_id)  # idempotent
+        if not spine:
+            raise ValueError("source version has no beats to continue from")
+        last_node = spine[-1]
+
+        target_id = _sid("ver")
+        node = await self.story_tree.continue_into(
+            last_node, target_id, target_episode.id, source.project_id, instruction)
+        opening = Beat(
+            index=0, start_s=0.0, end_s=max(len(node.text.split()) / 2.4, 10.0),
+            summary=node.summary or "(continued)", text=node.text,
+        )
+        bare = Version(
+            id=target_id, title=f"{source.title} (cont.)", source_type="script",
+            transcript=node.text, beats=[opening],
+        )
+        target = await self._attach_and_save(
+            bare, source.project_id, target_episode.id, "v1",
+            parent_version_id=source.id, universe_id=universe_id,
+        )
+        # generating the story bible is bundled into this one explicit action
+        # (not an extra click) — but only if the parent already has one, so a
+        # producer who never opted into memory.md never pays for it silently.
+        if source.memory_spec:
+            target = await self._generate_memory_for(target, node.character_states)
+        return {"episode": target_episode, "version": target, "node": node}
+
+    # ------------------------------------------------------------------ #
+    # Story bible (memory.md) — generated on demand, never automatic; fresh
+    # per version; a child's bible is generated from its parent's, never an
+    # edit to it.
+    # ------------------------------------------------------------------ #
+    async def _generate_memory_for(
+        self, version: Version, prior_states: dict[str, CharacterState],
+    ) -> Version:
+        parent_spec: MemorySpec | None = None
+        if version.parent_version_id:
+            parent = await self.store.get_version(version.parent_version_id)
+            if parent:
+                parent_spec = parent.memory_spec
+        spec = await self.providers.llm.generate_memory(parent_spec, version.transcript, prior_states)
+        version.memory_spec = spec
+        version.memory_md = memory_bible.render_markdown(spec, version.title)
+        await self.store.save_version(version)
+        return version
+
+    async def generate_memory_for_version(self, version_id: str) -> Version:
+        version = await self.store.get_version(version_id)
+        if not version:
+            raise ValueError("version not found")
+        nodes = await self.story_tree.list_tree(version.id)
+        prior_states = nodes[-1].character_states if nodes else {}
+        return await self._generate_memory_for(version, prior_states)
 
     # ------------------------------------------------------------------ #
     # Calibration + sweep

@@ -204,10 +204,74 @@ async def get_project(project_id: str):
 
 
 # --------------------------------------------------------------------------- #
+# Universes (parallel timelines across episodes)
+# --------------------------------------------------------------------------- #
+class UniverseIn(BaseModel):
+    name: str = ""
+
+
+class AssignUniverseIn(BaseModel):
+    universe_id: str | None = None
+    new_universe_name: str | None = None
+
+
+class ContinueUniverseIn(BaseModel):
+    instruction: str | None = None
+    target_episode_id: str | None = None
+    new_universe_name: str | None = None
+
+
+@app.post("/projects/{project_id}/universes")
+async def create_universe(project_id: str, payload: UniverseIn):
+    u = await pipeline.create_universe(project_id, payload.name)
+    return u.model_dump()
+
+
+@app.get("/projects/{project_id}/universes")
+async def list_universes(project_id: str):
+    return [u.model_dump() for u in await pipeline.list_universes(project_id)]
+
+
+@app.get("/projects/{project_id}/matrix")
+async def project_matrix(project_id: str):
+    m = await pipeline.get_project_matrix(project_id)
+    return {
+        "universes": [u.model_dump() for u in m["universes"]],
+        "episodes": [e.model_dump() for e in m["episodes"]],
+        "versions": [v.model_dump() for v in m["versions"]],
+    }
+
+
+@app.post("/versions/{version_id}/universe")
+async def assign_universe(version_id: str, payload: AssignUniverseIn):
+    version = await pipeline.assign_universe(
+        version_id, payload.universe_id, payload.new_universe_name)
+    return version.model_dump()
+
+
+@app.post("/versions/{version_id}/continue")
+async def continue_universe(version_id: str, payload: ContinueUniverseIn):
+    result = await pipeline.continue_universe(
+        version_id, payload.instruction, payload.target_episode_id, payload.new_universe_name)
+    return {
+        "episode": result["episode"].model_dump(),
+        "version": result["version"].model_dump() if result["version"] else None,
+        "node": result["node"].model_dump() if result["node"] else None,
+    }
+
+
+@app.post("/versions/{version_id}/memory")
+async def generate_memory(version_id: str):
+    version = await pipeline.generate_memory_for_version(version_id)
+    return version.model_dump()
+
+
+# --------------------------------------------------------------------------- #
 # Episodes + Versions
 # --------------------------------------------------------------------------- #
 async def _ingest(request: Request, project_id: str | None, episode_id: str | None,
-                  label: str = "v1", parent_version_id: str | None = None):
+                  label: str = "v1", parent_version_id: str | None = None,
+                  universe_id: str | None = None):
     """Shared script(JSON)/audio(multipart) ingestion → a saved Version."""
     ctype = request.headers.get("content-type", "")
     if ctype.startswith("multipart/form-data"):
@@ -221,7 +285,7 @@ async def _ingest(request: Request, project_id: str | None, episode_id: str | No
         return await pipeline.add_audio_version(
             title or audio.filename, data, audio.filename,  # type: ignore[union-attr]
             project_id=project_id, episode_id=episode_id, label=lbl,
-            parent_version_id=parent_version_id)
+            parent_version_id=parent_version_id, universe_id=universe_id)
     try:
         body = await request.json()
         payload = ScriptIn(**body)
@@ -229,16 +293,24 @@ async def _ingest(request: Request, project_id: str | None, episode_id: str | No
         raise HTTPException(400, "Provide JSON {title,text} or a multipart audio upload")
     return await pipeline.add_script_version(
         payload.title, payload.text, project_id=project_id, episode_id=episode_id,
-        label=payload.label or label, parent_version_id=parent_version_id)
+        label=payload.label or label, parent_version_id=parent_version_id,
+        universe_id=universe_id)
 
 
 @app.post("/projects/{project_id}/episodes")
-async def create_episode_in_project(project_id: str, request: Request):
+async def create_episode_in_project(project_id: str, request: Request, universe_id: str | None = None):
     project = await pipeline.store.get_project(project_id)
     if not project:
         raise HTTPException(404, "project not found")
+    # Episodes grow linearly by default: a brand-new episode auto-chains onto
+    # the project's current main timeline (unless the caller pins a specific
+    # universe, e.g. adding an episode deliberately under one branch).
+    default_parent, default_universe = await pipeline.default_continuation_for_new_episode(project_id)
     episode = await pipeline.create_episode(project_id, "Untitled Episode")
-    version = await _ingest(request, project_id, episode.id, label="v1")
+    version = await _ingest(
+        request, project_id, episode.id, label="v1",
+        parent_version_id=default_parent, universe_id=universe_id or default_universe,
+    )
     # name the episode after the version title
     episode.title = version.title
     await pipeline.store.save_episode(episode)
@@ -260,12 +332,13 @@ async def get_episode(episode_id: str):
 
 
 @app.post("/episodes/{episode_id}/versions")
-async def add_version(episode_id: str, request: Request, label: str = "v", parent: str | None = None):
+async def add_version(episode_id: str, request: Request, label: str = "v", parent: str | None = None,
+                      universe_id: str | None = None):
     episode = await pipeline.store.get_episode(episode_id)
     if not episode:
         raise HTTPException(404, "episode not found")
     version = await _ingest(request, episode.project_id, episode_id, label=label,
-                            parent_version_id=parent)
+                            parent_version_id=parent, universe_id=universe_id)
     return version.model_dump()
 
 
@@ -283,6 +356,47 @@ async def get_version(version_id: str):
 async def quick_ingest(request: Request):
     version = await _ingest(request, None, None)
     return version.model_dump()
+
+
+# --------------------------------------------------------------------------- #
+# Story tree (time-travel branching)
+# --------------------------------------------------------------------------- #
+class BranchIn(BaseModel):
+    instruction: str
+
+
+@app.post("/versions/{version_id}/tree/seed")
+async def seed_tree(version_id: str):
+    nodes = await pipeline.seed_story_tree(version_id)
+    return {"nodes": [n.model_dump() for n in nodes]}
+
+
+@app.get("/versions/{version_id}/tree")
+async def get_tree(version_id: str):
+    nodes = await pipeline.get_story_tree(version_id)
+    return {"nodes": [n.model_dump() for n in nodes]}
+
+
+@app.get("/nodes/{node_id}")
+async def get_node(node_id: str):
+    node = await pipeline.get_story_node(node_id)
+    if not node:
+        raise HTTPException(404, "story node not found")
+    return node.model_dump()
+
+
+@app.post("/nodes/{node_id}/branch")
+async def branch_node(node_id: str, payload: BranchIn):
+    if not payload.instruction.strip():
+        raise HTTPException(400, "instruction required")
+    node = await pipeline.branch_story_node(node_id, payload.instruction.strip())
+    return node.model_dump()
+
+
+@app.post("/nodes/{node_id}/materialize")
+async def materialize_node(node_id: str):
+    version = await pipeline.materialize_node_to_version(node_id)
+    return {"version_id": version.id}
 
 
 # --------------------------------------------------------------------------- #

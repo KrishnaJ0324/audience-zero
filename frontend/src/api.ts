@@ -6,7 +6,10 @@ import type {
   EpisodeMeta,
   PopulationSweep,
   Project,
+  ProjectMatrix,
   Persona,
+  StoryNode,
+  Universe,
   PersonaChatReply,
   Version,
 } from "./types";
@@ -55,6 +58,21 @@ export const api = {
       j<{ project: Project; episodes: EpisodeMeta[] }>(r)
     ),
 
+  // universes (parallel timelines across episodes)
+  listUniverses: (projectId: string) =>
+    fetch(`${BASE}/projects/${projectId}/universes`).then((r) => j<Universe[]>(r)),
+  getMatrix: (projectId: string) =>
+    fetch(`${BASE}/projects/${projectId}/matrix`).then((r) => j<ProjectMatrix>(r)),
+  continueUniverse: (
+    versionId: string, instruction?: string, targetEpisodeId?: string, newUniverseName?: string,
+  ) =>
+    postJson(`/versions/${versionId}/continue`, {
+      instruction: instruction ?? null, target_episode_id: targetEpisodeId ?? null,
+      new_universe_name: newUniverseName ?? null,
+    }).then((r) => j<{ episode: EpisodeMeta; version: Version | null; node: StoryNode | null }>(r)),
+  generateMemory: (versionId: string) =>
+    postJson(`/versions/${versionId}/memory`).then((r) => j<Version>(r)),
+
   // episodes + versions
   createEpisodeInProject: (projectId: string, title: string, text: string, label = "v1") =>
     postJson(`/projects/${projectId}/episodes`, { title, text, label }).then((r) =>
@@ -72,8 +90,13 @@ export const api = {
     fetch(`${BASE}/episodes/${id}`).then((r) =>
       j<{ episode: EpisodeMeta; versions: Version[]; runs: AnalysisRun[] }>(r)
     ),
-  addVersion: (episodeId: string, title: string, text: string, label = "v", parent?: string) => {
-    const q = new URLSearchParams({ label, ...(parent ? { parent } : {}) });
+  addVersion: (
+    episodeId: string, title: string, text: string, label = "v",
+    parent?: string, universeId?: string,
+  ) => {
+    const q = new URLSearchParams({
+      label, ...(parent ? { parent } : {}), ...(universeId ? { universe_id: universeId } : {}),
+    });
     return postJson(`/episodes/${episodeId}/versions?${q}`, { title, text, label }).then((r) =>
       j<Version>(r)
     );
@@ -146,6 +169,17 @@ export const api = {
       j<{ summary: string; enriched?: boolean }>(r)
     ),
   reportPdfUrl: (runId: string) => `${BASE}/runs/${runId}/report.pdf`,
+
+  // story tree (time-travel branching)
+  seedTree: (versionId: string) =>
+    postJson(`/versions/${versionId}/tree/seed`).then((r) => j<{ nodes: StoryNode[] }>(r)),
+  getTree: (versionId: string) =>
+    fetch(`${BASE}/versions/${versionId}/tree`).then((r) => j<{ nodes: StoryNode[] }>(r)),
+  getNode: (nodeId: string) => fetch(`${BASE}/nodes/${nodeId}`).then((r) => j<StoryNode>(r)),
+  branchNode: (nodeId: string, instruction: string) =>
+    postJson(`/nodes/${nodeId}/branch`, { instruction }).then((r) => j<StoryNode>(r)),
+  materializeNode: (nodeId: string) =>
+    postJson(`/nodes/${nodeId}/materialize`).then((r) => j<{ version_id: string }>(r)),
 
   // calibration (prediction vs actual)
   calibrate: (runId: string, retention: number[]) =>

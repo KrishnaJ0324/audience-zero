@@ -15,7 +15,17 @@ from __future__ import annotations
 import hashlib
 import re
 
-from ..contracts import Beat, BeatScore, Episode, PersonaConfig, PersonaReport
+from ..contracts import (
+    Beat,
+    BeatScore,
+    CharacterProfile,
+    CharacterState,
+    ConsistencyIssue,
+    Episode,
+    MemorySpec,
+    PersonaConfig,
+    PersonaReport,
+)
 
 # --------------------------------------------------------------------------- #
 # Lexicons (deliberately small & explicit — this is a heuristic, not an NLP)
@@ -228,3 +238,161 @@ def make_report(persona: PersonaConfig, episode: Episode, beats: list[Beat]) -> 
 def stable_seed(*parts: str) -> int:
     h = hashlib.sha256("|".join(parts).encode()).hexdigest()
     return int(h[:8], 16)
+
+
+# --------------------------------------------------------------------------- #
+# Story-tree heuristics: character-state folding + coarse consistency checks.
+# Deterministic, no network — same input => same output, same philosophy as
+# the persona-scoring heuristics above. Explicitly an approximation, not
+# semantic understanding.
+# --------------------------------------------------------------------------- #
+
+# Antonym-ish cue pairs: if a character's established memory/relationships
+# mention one side and a new branch's text contains the other, that's a coarse
+# signal of a contradiction worth surfacing (never blocking).
+_ANTONYM_PAIRS: list[tuple[str, str]] = [
+    ("trust", "betray"), ("protect", "abandon"), ("love", "hate"),
+    ("truth", "lie"), ("together", "alone"), ("ally", "enemy"),
+    ("forgive", "resent"), ("loyal", "traitor"), ("alive", "dead"),
+]
+
+_MEMORY_CAP = 8
+
+
+def speakers_in(text: str) -> list[str]:
+    """Dialogue speakers in a beat/scene, in first-appearance order, NARRATOR
+    excluded (it's not a character with state)."""
+    found = [s.strip() for s in _SPEAKER_RE.findall(text or "")]
+    return list(dict.fromkeys(s for s in found if s and s.upper() != "NARRATOR"))
+
+
+def _dominant_emotion(text_lower: str) -> str:
+    nwords = max(len(_WORD_RE.findall(text_lower)), 1)
+    candidates = {
+        "tense": _density(text_lower, TENSION, nwords),
+        "tender": _density(text_lower, ROMANCE, nwords),
+        "relieved": _density(text_lower, PAYOFF, nwords),
+    }
+    best = max(candidates, key=candidates.get)
+    return best if candidates[best] > 0 else "neutral"
+
+
+def fold_character_state(
+    prior: dict[str, CharacterState], beat_text: str
+) -> dict[str, CharacterState]:
+    """Fold one beat/scene of text into cumulative character state. NEVER
+    mutates ``prior`` — always returns fresh CharacterState copies, which is
+    the concrete mechanism behind the copy-on-write guarantee (branches must
+    never share mutable state)."""
+    out = {k: v.model_copy(deep=True) for k, v in prior.items()}
+    text = beat_text or ""
+    present = speakers_in(text)
+    if not present:
+        return out
+    tl = text.lower()
+    emotion = _dominant_emotion(tl)
+    first_line = next((ln.strip() for ln in text.splitlines() if ln.strip()), "")
+    memory_line = (first_line[:140] + "…") if len(first_line) > 140 else first_line
+    for name in present:
+        cs = (out.get(name) or CharacterState(name=name)).model_copy(deep=True)
+        if memory_line:
+            cs.memory = ([*cs.memory, memory_line])[-_MEMORY_CAP:]
+        cs.emotional_state = emotion
+        for other in present:
+            if other == name:
+                continue
+            if emotion == "tense":
+                tag = "tense"
+            elif emotion in ("tender", "relieved"):
+                tag = "ally"
+            else:
+                tag = cs.relationships.get(other, "acquainted")
+            cs.relationships[other] = tag
+        out[name] = cs
+    return out
+
+
+_THEME_LABELS = {
+    "romance": "romance / relationship drama",
+    "tense": "thriller / tension",
+    "relieved": "mystery with a payoff-driven arc",
+}
+
+
+def infer_theme(text: str) -> str:
+    tl = (text or "").lower()
+    nwords = max(len(_WORD_RE.findall(tl)), 1)
+    scores = {
+        "romance": _density(tl, ROMANCE, nwords),
+        "tense": _density(tl, TENSION, nwords),
+        "relieved": _density(tl, PAYOFF, nwords),
+    }
+    best = max(scores, key=scores.get)
+    return _THEME_LABELS[best] if scores[best] > 0 else "character drama"
+
+
+def build_memory_spec(
+    parent_spec: MemorySpec | None,
+    episode_text: str,
+    prior_states: dict[str, CharacterState],
+) -> MemorySpec:
+    """Deterministic story-bible builder (theme + character roles/behavior +
+    cross-cutting constraints) — an approximation, not literary analysis,
+    matching the mock philosophy elsewhere in this app. Never mutates
+    ``parent_spec``; always builds a fresh spec for the caller to attach."""
+    theme = parent_spec.theme if parent_spec and parent_spec.theme else infer_theme(episode_text)
+
+    chars_by_name: dict[str, CharacterProfile] = {
+        c.name: c for c in (parent_spec.characters if parent_spec else [])
+    }
+    for name in speakers_in(episode_text):
+        cs = prior_states.get(name)
+        prior = chars_by_name.get(name)
+        role = (prior.role if prior and prior.role else "") or (
+            "lead" if len(chars_by_name) < 2 else "supporting"
+        )
+        notes = (cs.emotional_state if cs else "") or (prior.behavior_notes if prior else "") or "steady"
+        chars_by_name[name] = CharacterProfile(name=name, role=role, behavior_notes=notes)
+
+    constraints = list(parent_spec.constraints) if parent_spec else []
+    for name in speakers_in(episode_text):
+        cs = prior_states.get(name)
+        if not cs:
+            continue
+        for other, tag in cs.relationships.items():
+            note = f"{name} & {other}: {tag}"
+            if note not in constraints:
+                constraints.append(note)
+
+    return MemorySpec(
+        theme=theme, characters=list(chars_by_name.values())[:12], constraints=constraints[:12],
+    )
+
+
+def check_consistency_heuristic(
+    established: dict[str, CharacterState], new_text: str, new_states: dict[str, CharacterState]
+) -> list[ConsistencyIssue]:
+    """Coarse antonym-cue scan — an approximation, not semantic checking.
+    Deterministic: same input => same output."""
+    tl = (new_text or "").lower()
+    issues: list[ConsistencyIssue] = []
+    for name, cs in established.items():
+        blob = " ".join(cs.memory).lower() + " " + " ".join(cs.relationships.values()).lower()
+        for a, b in _ANTONYM_PAIRS:
+            hit = None
+            if a in blob and b in tl:
+                hit = (a, b)
+            elif b in blob and a in tl:
+                hit = (b, a)
+            if hit:
+                was, now = hit
+                issues.append(
+                    ConsistencyIssue(
+                        id=f"ci_{stable_seed(name, was, now):08x}",
+                        severity="warning",
+                        summary=f"{name} was established as '{was}' — this branch reads like '{now}'.",
+                        conflicting_fact=was,
+                        character=name,
+                    )
+                )
+    return issues

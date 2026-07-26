@@ -8,7 +8,17 @@ from __future__ import annotations
 
 import re
 
-from ..contracts import Beat, Episode, PersonaConfig, PersonaReport, RevisedScene
+from ..contracts import (
+    Beat,
+    CharacterState,
+    ConsistencyIssue,
+    Episode,
+    MemorySpec,
+    PersonaConfig,
+    PersonaReport,
+    RevisedScene,
+    StoryAdvance,
+)
 from . import heuristics, wavtools
 
 _BEAT_MARKER = re.compile(r"(?im)^\s*(?:#+\s*)?(?:beat|scene)\s*\d+\b.*$")
@@ -154,6 +164,39 @@ class MockLLM:
             change_rationale=rationale,
             casting=casting,
         )
+
+    async def extract_character_state(
+        self, prior_states: dict[str, CharacterState], beat_text: str
+    ) -> dict[str, CharacterState]:
+        return heuristics.fold_character_state(prior_states, beat_text)
+
+    async def advance_story(
+        self, prior_states: dict[str, CharacterState], context_text: str, instruction: str
+    ) -> StoryAdvance:
+        speakers = heuristics.speakers_in(context_text)
+        lead = speakers[0] if speakers else "NARRATOR"
+        clean = instruction.strip().rstrip(".") or "the story continues"
+        new_text = f"{lead}: {clean}.\nNARRATOR: The story bends toward it — {clean.lower()}."
+        new_states = heuristics.fold_character_state(prior_states, new_text)
+        summary = (clean[:90] + "…") if len(clean) > 90 else clean
+        return StoryAdvance(text=new_text, character_states=new_states, summary=summary)
+
+    async def check_consistency(
+        self,
+        established_states: dict[str, CharacterState],
+        ancestor_summaries: list[str],
+        new_text: str,
+        new_states: dict[str, CharacterState],
+    ) -> list[ConsistencyIssue]:
+        return heuristics.check_consistency_heuristic(established_states, new_text, new_states)
+
+    async def generate_memory(
+        self,
+        parent_spec: MemorySpec | None,
+        episode_text: str,
+        prior_states: dict[str, CharacterState],
+    ) -> MemorySpec:
+        return heuristics.build_memory_spec(parent_spec, episode_text, prior_states)
 
 
     async def chat_persona(self, messages: list[dict]) -> dict:

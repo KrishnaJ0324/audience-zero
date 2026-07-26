@@ -6,7 +6,10 @@ import { PersonasView } from "./components/PersonasView";
 import { ProjectView } from "./components/ProjectView";
 import { ProjectsView } from "./components/ProjectsView";
 import { RunView } from "./components/RunView";
+import { StoryTreeView } from "./components/StoryTreeView";
+import { UniverseMatrixView } from "./components/UniverseMatrixView";
 import { Sidebar } from "./components/Sidebar";
+
 import type { AnalysisRun } from "./types";
 import { useNav } from "./useNav";
 
@@ -44,14 +47,18 @@ export default function App() {
       <div className="main">
         <Header provider={provider} crumbs={crumbs} />
 
-        <div className="view">
-          {route.view === "projects" && <ProjectsView go={go} />}
-          {route.view === "personas" && <PersonasView provider={provider} />}
-          {route.view === "project" && <ProjectView id={route.id} go={go} />}
-          {route.view === "episode" && <EpisodeView id={route.id} go={go} />}
-          {route.view === "run" && <RunView key={route.id} runId={route.id} autoSweep={route.sweep} />}
-          {route.view === "shared" && <SharedView token={route.token} />}
-        </div>
+      <div className="view">
+        {route.view === "projects" && <ProjectsView go={go} />}
+        {route.view === "personas" && <PersonasView provider={provider} />}
+        {route.view === "project" && <ProjectView id={route.id} go={go} />}
+        {route.view === "episode" && <EpisodeView id={route.id} go={go} />}
+        {route.view === "run" && <RunView key={route.id} runId={route.id} autoSweep={route.sweep} />}
+        {route.view === "shared" && <SharedView token={route.token} />}
+        {route.view === "tree" && (
+          <StoryTreeView key={route.versionId} episodeId={route.episodeId} versionId={route.versionId} go={go} />
+        )}
+        {route.view === "matrix" && <UniverseMatrixView key={route.projectId} projectId={route.projectId} go={go} />}
+      </div>
       </div>
     </div>
   );
@@ -59,10 +66,10 @@ export default function App() {
 
 function labelFor(view: string) {
   return (
-    { personas: "Personas", project: "Project", episode: "Episode", run: "Analysis run", shared: "Shared report" } as Record<
-      string,
-      string
-    >
+    {
+      personas: "Personas", project: "Project", episode: "Episode", run: "Analysis run",
+      shared: "Shared report", tree: "Story tree", matrix: "Universe graph",
+    } as Record<string, string>
   )[view] ?? view;
 }
 
