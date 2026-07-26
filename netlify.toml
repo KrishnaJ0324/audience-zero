@@ -1,0 +1,22 @@
+# Netlify build for the dashboard. The FastAPI backend deploys separately
+# (Render); this site is static and talks to it cross-origin.
+
+[build]
+  base    = "frontend"
+  command = "npm run build"
+  publish = "frontend/dist"
+
+[build.environment]
+  NODE_VERSION = "20"
+  # Vite inlines VITE_* at BUILD time, so it has to be set here (or in the
+  # Netlify UI) — a runtime variable on a static host has no effect.
+  # No trailing slash, and no /api suffix: the backend serves routes at root.
+  VITE_API_BASE = "https://audience-zero.onrender.com"
+
+# Deploy previews and branch builds get their own subdomains
+# (deploy-preview-N--audience-zero.netlify.app), which the backend's
+# AZ_CORS_ORIGINS list will NOT match. They can still build; their API calls
+# just get blocked until that origin is allowed too.
+
+# No SPA redirect rule is needed: routing is hash-based (#/run/...), so the
+# browser never asks the server for those paths.

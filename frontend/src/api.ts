@@ -14,7 +14,23 @@ import type {
   Version,
 } from "./types";
 
-const BASE = (import.meta as any).env?.VITE_API_BASE ?? "/api";
+/**
+ * API origin.
+ *
+ * Dev: unset, so requests go to the same origin at `/api` and vite.config.ts
+ * proxies them to the backend (stripping the `/api` prefix).
+ *
+ * Deployed: set VITE_API_BASE to the backend origin with NO trailing slash and
+ * NO `/api` suffix — the backend serves its routes at the root, e.g.
+ *   VITE_API_BASE=https://audience-zero.onrender.com
+ * Vite inlines this at BUILD time, so it must be set in the build environment;
+ * setting it as a runtime variable on a static host has no effect.
+ *
+ * The trailing slash is stripped defensively: pasting the URL straight from a
+ * browser bar gives ".../" and every path here starts with "/", which would
+ * otherwise produce a double slash.
+ */
+const BASE = String((import.meta as any).env?.VITE_API_BASE ?? "/api").replace(/\/+$/, "");
 
 async function j<T>(res: Response): Promise<T> {
   if (!res.ok) {
