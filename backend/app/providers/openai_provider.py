@@ -25,6 +25,7 @@ from ..contracts import (
     RevisedScene,
     StoryAdvance,
 )
+from ..services import verdict_engine  # skip_index only; verdict_engine imports no providers
 from . import heuristics
 from .mock import MockLLM, MockTTS
 from .wavtools import write_wav
@@ -86,7 +87,11 @@ class OpenAILLM:
             "Return STRICT JSON: {\"scores\":[{\"beat_index\":int,"
             "\"engagement\":int}],\"skip_at_beat\":int|null,\"drop_reason\":str,"
             "\"verdict_text\":str,\"confidence\":number}. verdict_text is one "
-            "sentence, in your voice, said aloud."
+            "sentence, in your voice, said aloud.\n"
+            f"beat_index and skip_at_beat are ZERO-BASED indices in "
+            f"[0, {len(beats) - 1}] — they are the [Beat N] labels below, NOT "
+            "1-based positions. skip_at_beat is the beat where you stopped "
+            "listening, or null if you finished."
         )
         try:
             resp = await self.client.chat.completions.create(
@@ -104,10 +109,20 @@ class OpenAILLM:
             ]
             if len(scores) != len(beats):  # incomplete => fall back deterministically
                 raise ValueError("incomplete scores")
+            # scores are filtered against `valid` above; skip_at_beat was not,
+            # so a 1-based answer (== len(beats)) used to match no beat and the
+            # listener's churn vanished. Clamp it onto a real index instead.
+            raw_skip = data.get("skip_at_beat")
+            try:
+                skip = verdict_engine.skip_index(
+                    None if raw_skip is None else int(raw_skip), len(beats)
+                )
+            except (TypeError, ValueError):
+                skip = None
             return PersonaReport(
                 persona_id=persona.id,
                 scores=sorted(scores, key=lambda s: s.beat_index),
-                skip_at_beat=data.get("skip_at_beat"),
+                skip_at_beat=skip,
                 drop_reason=str(data.get("drop_reason", ""))[:200],
                 verdict_text=str(data.get("verdict_text", ""))[:280],
                 confidence=float(data.get("confidence", 0.6)),

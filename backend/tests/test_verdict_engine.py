@@ -112,3 +112,63 @@ def test_degraded_panel_still_produces_verdict():
     v = ve.judge(reports, personas, 3)
     assert len(v.aggregate_curve) == 3
     assert v.per_persona_summary
+
+
+# --------------------------------------------------------------------------- #
+# Regressions for "Predicted 0% listener drop at beat 1"
+#
+# Three independent defects combined to report a fake 0% verdict while throwing
+# away every churn signal in the run:
+#   1. churn[0] was force-zeroed, discarding beat-1 skips *and* beat-1 soft leak
+#   2. skip_at_beat == n_beats (a 1-based answer from an LLM) matched no beat
+#   3. max() ties resolved to index 0, pinning the label on beat 1
+# --------------------------------------------------------------------------- #
+
+
+def test_skip_at_first_beat_is_counted():
+    """A listener who bails during beat 1 must show up as churn."""
+    personas = [_persona("a"), _persona("b")]
+    reports = [_report("a", [80, 80], skip=0), _report("b", [80, 80])]
+    v = ve.judge(reports, personas, 2)
+    assert v.weakest_beat == 0
+    assert v.predicted_drop_pct > 0
+    assert v.retention_curve[0] < 1.0
+
+
+def test_one_based_skip_index_is_clamped_not_dropped():
+    """`skip_at_beat == n_beats` is a 1-based answer for the final beat."""
+    assert ve.skip_index(3, 3) == 2      # out of range -> last beat
+    assert ve.skip_index(99, 3) == 2     # far out of range -> last beat
+    assert ve.skip_index(1, 3) == 1      # in range -> untouched
+    assert ve.skip_index(None, 3) is None
+    assert ve.skip_index(-1, 3) is None
+
+    personas = [_persona("a"), _persona("b")]
+    # "a" quits at beat 2 of 2, expressed 1-based as index 2
+    reports = [_report("a", [80, 80], skip=2), _report("b", [80, 80])]
+    v = ve.judge(reports, personas, 2)
+    assert v.weakest_beat == 1
+    assert v.predicted_drop_pct > 0
+    # the summary the UI renders is normalised too
+    assert [s.skip_at_beat for s in v.per_persona_summary if s.persona_id == "a"] == [1]
+
+
+def test_no_churn_run_blames_the_weakest_beat_not_beat_one():
+    """With nothing to churn, the label must follow engagement, not index order."""
+    personas = [_persona("a")]
+    reports = [_report("a", [90, 70, 95])]  # all above SOFT_THRESHOLD
+    v = ve.judge(reports, personas, 3)
+    assert v.predicted_drop_pct == 0.0
+    assert v.weakest_beat == 1               # the 70, not beat 1 by default
+    assert "No predicted drop-off" in v.headline
+    assert "0%" not in v.headline
+
+
+def test_weak_opening_produces_soft_leak():
+    """Engagement far below the comfort threshold bleeds listeners at beat 1."""
+    personas = [_persona("a")]
+    reports = [_report("a", [20, 90, 90])]   # 35 points under SOFT_THRESHOLD
+    v = ve.judge(reports, personas, 3)
+    assert v.weakest_beat == 0
+    assert v.predicted_drop_pct > 0
+    assert v.retention_curve[-1] < 1.0

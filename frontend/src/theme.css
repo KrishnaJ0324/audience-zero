@@ -59,11 +59,7 @@ body {
   font-family: var(--sans);
   font-size: 14px;
   background-color: var(--paper);
-  /* barely-there cool wash so large empty areas aren't flat grey */
-  background-image:
-    radial-gradient(900px 520px at 10% -10%, rgba(37, 99, 235, 0.05), transparent 60%),
-    radial-gradient(760px 460px at 95% 2%, rgba(13, 148, 136, 0.035), transparent 58%);
-  background-attachment: fixed;
+  /* ambient art lives in <Decor /> (decor.css) so it can layer + animate */
   -webkit-font-smoothing: antialiased;
   text-rendering: optimizeLegibility;
 }
@@ -78,6 +74,10 @@ body {
   display: grid;
   grid-template-columns: var(--sidebar-w) minmax(0, 1fr);
   min-height: 100%;
+  /* sits above the fixed .decor layer; the portalled flyout (z-index 90) is a
+     sibling of .shell, so it still wins */
+  position: relative;
+  z-index: 1;
 }
 .main {
   min-width: 0;

@@ -2,6 +2,7 @@ import { useEffect, useState } from "react";
 import { api } from "../api";
 import type { EpisodeMeta, Project } from "../types";
 import { PersonaPanel } from "./PersonaPanel";
+import { EmptyNote } from "./Decor";
 import { ScriptInput } from "./ScriptInput";
 import { notifyDataChanged } from "./Sidebar";
 

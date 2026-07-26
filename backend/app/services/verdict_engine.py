@@ -19,6 +19,12 @@ share of the *currently remaining* listeners churns:
 ``retention_i = retention_{i-1} * (1 - churn_i)``. The weakest beat is where the
 most listeners are lost (max churn), and the headline drop % is that beat's
 churn expressed as a percentage of the listeners who reached it.
+
+Beat 1 churns like any other beat. An earlier version forced ``churn[0] = 0``
+on the reasoning that "nobody churns before the episode starts", but that
+conflates *before* beat 1 with *during* beat 1 — and a weak opening is the most
+common place serialized audio loses listeners. Zeroing it discarded exactly the
+signal the product exists to surface.
 """
 from __future__ import annotations
 
@@ -38,6 +44,21 @@ MAX_CHURN = 0.85
 
 def _weights(personas: list[PersonaConfig]) -> dict[str, float]:
     return {p.id: max(p.audience_weight, 0.0) for p in personas}
+
+
+def skip_index(skip: int | None, n_beats: int) -> int | None:
+    """Normalise a report's skip point onto a valid beat index.
+
+    Providers are not uniformly disciplined about indexing. An LLM asked for a
+    beat *index* routinely answers with the 1-based beat *number*, so
+    ``skip_at_beat == n_beats`` is common — and it used to match no beat at all,
+    silently discarding that listener's churn. Clamp into range instead of
+    dropping the signal; a listener who said "I quit" must always be counted
+    somewhere.
+    """
+    if skip is None or n_beats <= 0 or skip < 0:
+        return None
+    return min(skip, n_beats - 1)
 
 
 def aggregate_curve(
@@ -65,13 +86,15 @@ def _churn_series(
     total_w = sum(w.values()) or 1.0
     n = len(curve)
     churn = [0.0] * n
+    skips = [skip_index(r.skip_at_beat, n) for r in reports]
     for i in range(n):
-        skip_w = sum(w.get(r.persona_id, 1.0) for r in reports if r.skip_at_beat == i)
+        skip_w = sum(
+            w.get(r.persona_id, 1.0) for r, s in zip(reports, skips) if s == i
+        )
         skip_share = skip_w / total_w
         soft = max(0.0, (SOFT_THRESHOLD - curve[i]) / 100.0) * SOFT_K
         c = SKIP_WEIGHT * skip_share + soft
         churn[i] = min(MAX_CHURN, max(0.0, c))
-    churn[0] = 0.0  # nobody churns before the episode starts
     return churn
 
 
@@ -117,7 +140,12 @@ def judge(
     churn = _churn_series(reports, personas, curve)
     retention = retention_from_churn(churn)
 
-    weakest = max(range(n_beats), key=lambda i: churn[i]) if n_beats else 0
+    # Tie-break on lowest engagement. Without it a run where nothing churns
+    # resolves to index 0 purely because max() returns the first maximum, and
+    # the UI reports "0% drop at beat 1" as if beat 1 were implicated.
+    weakest = (
+        max(range(n_beats), key=lambda i: (churn[i], -curve[i])) if n_beats else 0
+    )
     predicted_drop_pct = round(churn[weakest] * 100.0, 1)
     binge_p, final_hook = binge_probability(reports, personas, n_beats)
 
@@ -130,14 +158,20 @@ def judge(
             PerPersonaSummary(
                 persona_id=r.persona_id,
                 persona_name=p.name if p else r.persona_id,
-                skip_at_beat=r.skip_at_beat,
+                skip_at_beat=skip_index(r.skip_at_beat, n_beats),
                 mean_engagement=mean_eng,
                 verdict_text=r.verdict_text,
             )
         )
 
     # weakest_beat stays 0-indexed for array access; humans count from 1.
-    headline = f"Predicted {predicted_drop_pct:.0f}% listener drop at beat {weakest + 1}"
+    if predicted_drop_pct < 0.5:
+        # Say so plainly rather than pinning a fake 0% on an arbitrary beat.
+        headline = f"No predicted drop-off — weakest beat is {weakest + 1}"
+    else:
+        headline = (
+            f"Predicted {predicted_drop_pct:.0f}% listener drop at beat {weakest + 1}"
+        )
     return PanelVerdict(
         aggregate_curve=curve,
         weakest_beat=weakest,

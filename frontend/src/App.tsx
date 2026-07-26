@@ -1,5 +1,6 @@
 import { useEffect, useState } from "react";
 import { api } from "./api";
+import { Decor } from "./components/Decor";
 import { EpisodeView } from "./components/EpisodeView";
 import { Header } from "./components/Header";
 import { PersonasView } from "./components/PersonasView";
@@ -41,26 +42,31 @@ export default function App() {
   );
 
   return (
-    <div className="shell">
-      <Sidebar route={route} go={go} />
+    <>
+      <Decor />
+      <div className="shell">
+        <Sidebar route={route} go={go} />
 
-      <div className="main">
-        <Header provider={provider} crumbs={crumbs} />
+        <div className="main">
+          <Header provider={provider} crumbs={crumbs} />
 
-      <div className="view">
-        {route.view === "projects" && <ProjectsView go={go} />}
-        {route.view === "personas" && <PersonasView provider={provider} />}
-        {route.view === "project" && <ProjectView id={route.id} go={go} />}
-        {route.view === "episode" && <EpisodeView id={route.id} go={go} />}
-        {route.view === "run" && <RunView key={route.id} runId={route.id} autoSweep={route.sweep} />}
-        {route.view === "shared" && <SharedView token={route.token} />}
-        {route.view === "tree" && (
-          <StoryTreeView key={route.versionId} episodeId={route.episodeId} versionId={route.versionId} go={go} />
-        )}
-        {route.view === "matrix" && <UniverseMatrixView key={route.projectId} projectId={route.projectId} go={go} />}
+          <div className="view">
+            {route.view === "projects" && <ProjectsView go={go} />}
+            {route.view === "personas" && <PersonasView provider={provider} />}
+            {route.view === "project" && <ProjectView id={route.id} go={go} />}
+            {route.view === "episode" && <EpisodeView id={route.id} go={go} />}
+            {route.view === "run" && <RunView key={route.id} runId={route.id} autoSweep={route.sweep} />}
+            {route.view === "shared" && <SharedView token={route.token} />}
+            {route.view === "tree" && (
+              <StoryTreeView key={route.versionId} episodeId={route.episodeId} versionId={route.versionId} go={go} />
+            )}
+            {route.view === "matrix" && (
+              <UniverseMatrixView key={route.projectId} projectId={route.projectId} go={go} />
+            )}
+          </div>
+        </div>
       </div>
-      </div>
-    </div>
+    </>
   );
 }
 

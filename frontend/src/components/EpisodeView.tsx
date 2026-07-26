@@ -1,6 +1,7 @@
 import { useEffect, useState } from "react";
 import { api } from "../api";
 import type { AnalysisRun, EpisodeMeta, Universe, Version } from "../types";
+import { EmptyNote } from "./Decor";
 
 /** Query params a "continue this universe" link from the Universe Matrix can
  * pass through: which universe this pasted script continues, and which
@@ -125,7 +126,11 @@ export function EpisodeView({ id, go }: { id: string; go: (to: string) => void }
       <div className="stack">
         <div className="card">
           <h2 data-idx="◷">Analysis history<span className="note">{runs.length} runs</span></h2>
-          {runs.length === 0 && <div className="subline">No analyses yet.</div>}
+          {runs.length === 0 && (
+            <EmptyNote title="No analyses yet">
+              Run the panel on a version to see the attention curve and where listeners drop off.
+            </EmptyNote>
+          )}
           {runs.map((r) => (
             <div key={r.id} className="history-item" onClick={() => go(`/run/${r.id}`)}>
               <div>
