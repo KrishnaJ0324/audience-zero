@@ -11,10 +11,14 @@ from typing import Protocol, runtime_checkable
 
 from ..contracts import (
     Beat,
+    CharacterState,
+    ConsistencyIssue,
     Episode,
+    MemorySpec,
     PersonaConfig,
     PersonaReport,
     RevisedScene,
+    StoryAdvance,
 )
 
 
@@ -38,6 +42,43 @@ class LLMJudge(Protocol):
         speakers: list[str],
     ) -> RevisedScene:
         """Rewrite the weakest scene using the panel's critiques."""
+
+    async def extract_character_state(
+        self, prior_states: dict[str, CharacterState], beat_text: str
+    ) -> dict[str, CharacterState]:
+        """Seed mode: fold one ALREADY-WRITTEN beat into cumulative character
+        state. Generates no new text — used once per beat when first building
+        a story tree's linear spine from a trunk Version."""
+
+    async def advance_story(
+        self,
+        prior_states: dict[str, CharacterState],
+        context_text: str,
+        instruction: str,
+    ) -> StoryAdvance:
+        """ONE combined call: continue the story per the free-form instruction
+        and infer updated character states in the same response."""
+
+    async def check_consistency(
+        self,
+        established_states: dict[str, CharacterState],
+        ancestor_summaries: list[str],
+        new_text: str,
+        new_states: dict[str, CharacterState],
+    ) -> list[ConsistencyIssue]:
+        """Separate LLM-as-judge pass over the new branch. Never blocks/retries
+        — implementations should degrade to [] on failure, not raise."""
+
+    async def generate_memory(
+        self,
+        parent_spec: MemorySpec | None,
+        episode_text: str,
+        prior_states: dict[str, CharacterState],
+    ) -> MemorySpec:
+        """Generate this Version's story-bible spec (theme, character roles/
+        behaviors, cross-cutting constraints) from its own episode text, given
+        the parent version's spec (None at the root). Never mutates
+        ``parent_spec`` — always a fresh spec for the caller to attach."""
 
 
 @runtime_checkable

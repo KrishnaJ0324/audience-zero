@@ -41,6 +41,12 @@ class Settings(BaseSettings):
     revision_model: str = "gpt-4o"
     default_persona_model: str = "gpt-4o-mini"
     tts_model: str = "gpt-4o-mini-tts"
+    continuation_model: str = "gpt-4o"        # advance_story — real generation
+    consistency_model: str = "gpt-4o-mini"    # extract_character_state + check_consistency
+    memory_model: str = "gpt-4o-mini"         # generate_memory — story-bible spec extraction
+
+    # --- story tree -------------------------------------------------------
+    story_context_window: int = 3  # full-text ancestors before falling back to summaries
 
     # --- paths ----------------------------------------------------------
     personas_dir: Path = BACKEND_ROOT / "personas"

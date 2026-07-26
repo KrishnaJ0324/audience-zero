@@ -12,9 +12,21 @@ import json
 import tempfile
 
 from ..config import Settings
-from ..contracts import Beat, BeatScore, Episode, PersonaConfig, PersonaReport, RevisedScene
+from ..contracts import (
+    Beat,
+    BeatScore,
+    CharacterProfile,
+    CharacterState,
+    ConsistencyIssue,
+    Episode,
+    MemorySpec,
+    PersonaConfig,
+    PersonaReport,
+    RevisedScene,
+    StoryAdvance,
+)
 from . import heuristics
-from .mock import MockTTS
+from .mock import MockLLM, MockTTS
 from .wavtools import write_wav
 from .wavtools import speak as _mock_speak
 
@@ -206,6 +218,182 @@ class OpenAILLM:
             from .mock import MockLLM
 
             return await MockLLM().revise(beat, critiques, speakers)
+
+    async def extract_character_state(
+        self, prior_states: dict[str, CharacterState], beat_text: str
+    ) -> dict[str, CharacterState]:
+        sys = (
+            "You maintain a character-state ledger for a serialized story. Given "
+            "the prior ledger and one ALREADY-WRITTEN beat of text, update it: add "
+            "any new memory facts, refine emotional_state, and relationships "
+            "between characters who appear together. Do NOT invent events beyond "
+            "what the beat text says. Return STRICT JSON: {\"states\": "
+            "{name: {\"memory\": [str], \"emotional_state\": str, "
+            "\"relationships\": {other_name: str}}}}."
+        )
+        user = (
+            f"PRIOR LEDGER:\n{json.dumps({k: v.model_dump() for k, v in prior_states.items()})}"
+            f"\n\nBEAT TEXT:\n{beat_text}"
+        )
+        try:
+            resp = await self.client.chat.completions.create(
+                model=self.s.consistency_model,
+                messages=[{"role": "system", "content": sys}, {"role": "user", "content": user}],
+                response_format={"type": "json_object"},
+                temperature=0.2,
+            )
+            data = json.loads(resp.choices[0].message.content or "{}")
+            states = data.get("states", {})
+            if not isinstance(states, dict):
+                raise ValueError("malformed ledger")
+            return {
+                name: CharacterState(
+                    name=name,
+                    memory=list(v.get("memory", []))[-8:],
+                    emotional_state=str(v.get("emotional_state", "neutral")),
+                    relationships=dict(v.get("relationships", {})),
+                )
+                for name, v in states.items()
+            }
+        except Exception:
+            return await MockLLM().extract_character_state(prior_states, beat_text)
+
+    async def advance_story(
+        self, prior_states: dict[str, CharacterState], context_text: str, instruction: str
+    ) -> StoryAdvance:
+        sys = (
+            "You are a story co-writer. Continue the scene per the user's "
+            "free-form instruction, staying consistent with the given character "
+            "ledger and recent context. Write ONE new scene (dialogue + light "
+            "narration), not a summary. In the SAME response, update the "
+            "character ledger for anyone who appears. Return STRICT JSON: "
+            "{\"text\": str, \"summary\": str, \"character_states\": "
+            "{name: {\"memory\": [str], \"emotional_state\": str, "
+            "\"relationships\": {other_name: str}}}}."
+        )
+        user = (
+            f"CHARACTER LEDGER:\n{json.dumps({k: v.model_dump() for k, v in prior_states.items()})}"
+            f"\n\nRECENT CONTEXT:\n{context_text}\n\nINSTRUCTION:\n{instruction}"
+        )
+        try:
+            resp = await self.client.chat.completions.create(
+                model=self.s.continuation_model,
+                messages=[{"role": "system", "content": sys}, {"role": "user", "content": user}],
+                response_format={"type": "json_object"},
+                temperature=0.85,
+            )
+            data = json.loads(resp.choices[0].message.content or "{}")
+            text = str(data.get("text", "")).strip()
+            if not text:
+                raise ValueError("empty continuation")
+            states = data.get("character_states", {})
+            character_states = {
+                name: CharacterState(
+                    name=name,
+                    memory=list(v.get("memory", []))[-8:],
+                    emotional_state=str(v.get("emotional_state", "neutral")),
+                    relationships=dict(v.get("relationships", {})),
+                )
+                for name, v in states.items()
+            } if isinstance(states, dict) else {}
+            return StoryAdvance(
+                text=text, character_states=character_states,
+                summary=str(data.get("summary", ""))[:120],
+            )
+        except Exception:
+            return await MockLLM().advance_story(prior_states, context_text, instruction)
+
+    async def check_consistency(
+        self,
+        established_states: dict[str, CharacterState],
+        ancestor_summaries: list[str],
+        new_text: str,
+        new_states: dict[str, CharacterState],
+    ) -> list[ConsistencyIssue]:
+        sys = (
+            "You are a continuity checker for a branching story. Compare the new "
+            "scene + its inferred character states against the established ledger "
+            "and prior beat summaries. Flag ONLY genuine contradictions (a "
+            "character doing/feeling something that directly conflicts with an "
+            "established fact) — do not flag plausible new developments. Return "
+            "STRICT JSON: {\"issues\": [{\"severity\": \"info\"|\"warning\"|"
+            "\"critical\", \"summary\": str, \"conflicting_fact\": str, "
+            "\"character\": str}]}. Empty list if nothing contradicts."
+        )
+        user = (
+            f"ESTABLISHED LEDGER:\n{json.dumps({k: v.model_dump() for k, v in established_states.items()})}"
+            f"\n\nPRIOR SUMMARIES:\n{ancestor_summaries}"
+            f"\n\nNEW SCENE:\n{new_text}"
+            f"\n\nNEW LEDGER:\n{json.dumps({k: v.model_dump() for k, v in new_states.items()})}"
+        )
+        try:
+            resp = await self.client.chat.completions.create(
+                model=self.s.consistency_model,
+                messages=[{"role": "system", "content": sys}, {"role": "user", "content": user}],
+                response_format={"type": "json_object"},
+                temperature=0.1,
+            )
+            data = json.loads(resp.choices[0].message.content or "{}")
+            raw = data.get("issues", [])
+            if not isinstance(raw, list):
+                raise ValueError("malformed issues")
+            return [
+                ConsistencyIssue(
+                    id=f"ci_{heuristics.stable_seed(str(i), new_text[:40]):08x}",
+                    severity=iss.get("severity", "warning"),
+                    summary=str(iss.get("summary", ""))[:280],
+                    conflicting_fact=str(iss.get("conflicting_fact", ""))[:200],
+                    character=str(iss.get("character", "")),
+                )
+                for i, iss in enumerate(raw)
+            ]
+        except Exception:
+            return await MockLLM().check_consistency(
+                established_states, ancestor_summaries, new_text, new_states)
+
+    async def generate_memory(
+        self,
+        parent_spec: MemorySpec | None,
+        episode_text: str,
+        prior_states: dict[str, CharacterState],
+    ) -> MemorySpec:
+        sys = (
+            "You maintain a story bible for a serialized story. Given the "
+            "parent version's story bible (if any) and this version's episode "
+            "text, produce an updated bible: theme, each character's role and "
+            "behavior notes, and cross-cutting constraints future episodes "
+            "must respect. Preserve continuity from the parent bible; only add "
+            "or refine, never contradict it without reason. Return STRICT "
+            "JSON: {\"theme\": str, \"characters\": [{\"name\": str, "
+            "\"role\": str, \"behavior_notes\": str}], \"constraints\": [str]}."
+        )
+        user = (
+            f"PARENT BIBLE:\n{parent_spec.model_dump_json() if parent_spec else '(none — this is the root episode)'}"
+            f"\n\nCHARACTER LEDGER:\n{json.dumps({k: v.model_dump() for k, v in prior_states.items()})}"
+            f"\n\nEPISODE TEXT:\n{episode_text}"
+        )
+        try:
+            resp = await self.client.chat.completions.create(
+                model=self.s.memory_model,
+                messages=[{"role": "system", "content": sys}, {"role": "user", "content": user}],
+                response_format={"type": "json_object"},
+                temperature=0.2,
+            )
+            data = json.loads(resp.choices[0].message.content or "{}")
+            characters = [
+                CharacterProfile(
+                    name=str(c.get("name", "")), role=str(c.get("role", "")),
+                    behavior_notes=str(c.get("behavior_notes", "")),
+                )
+                for c in data.get("characters", []) if c.get("name")
+            ]
+            constraints = [str(c) for c in data.get("constraints", [])][:12]
+            theme = str(data.get("theme", "")) or (parent_spec.theme if parent_spec else "")
+            if not theme and not characters:
+                raise ValueError("empty story bible")
+            return MemorySpec(theme=theme, characters=characters[:12], constraints=constraints)
+        except Exception:
+            return await MockLLM().generate_memory(parent_spec, episode_text, prior_states)
 
 
 class OpenAISTT:

@@ -7,6 +7,18 @@ export interface Beat {
   text: string;
 }
 
+export interface CharacterProfile {
+  name: string;
+  role: string;
+  behavior_notes: string;
+}
+
+export interface MemorySpec {
+  theme: string;
+  characters: CharacterProfile[];
+  constraints: string[];
+}
+
 export interface Version {
   id: string;
   title: string;
@@ -18,6 +30,9 @@ export interface Version {
   episode_id: string;
   label: string;
   parent_version_id: string | null;
+  universe_id: string;
+  memory_spec: MemorySpec | null;
+  memory_md: string;
   created_at: string;
 }
 // alias — the live SSE state still calls the analyzed content "episode"
@@ -34,6 +49,53 @@ export interface EpisodeMeta {
   id: string;
   project_id: string;
   title: string;
+  sequence: number;
+  created_at: string;
+}
+
+// ---- universes (parallel timelines across episodes) ----
+export interface Universe {
+  id: string;
+  project_id: string;
+  name: string;
+  created_at: string;
+}
+
+export interface ProjectMatrix {
+  universes: Universe[];
+  episodes: EpisodeMeta[];
+  versions: Version[];
+}
+
+// ---- story tree (time-travel branching) ----
+export interface CharacterState {
+  name: string;
+  memory: string[];
+  emotional_state: string;
+  relationships: Record<string, string>;
+}
+
+export interface ConsistencyIssue {
+  id: string;
+  severity: "info" | "warning" | "critical";
+  summary: string;
+  conflicting_fact: string;
+  character: string;
+}
+
+export interface StoryNode {
+  id: string;
+  root_version_id: string;
+  episode_id: string;
+  project_id: string;
+  parent_node_id: string | null;
+  beat_index: number;
+  prompt: string;
+  text: string;
+  summary: string;
+  character_states: Record<string, CharacterState>;
+  consistency_issues: ConsistencyIssue[];
+  label: string;
   created_at: string;
 }
 

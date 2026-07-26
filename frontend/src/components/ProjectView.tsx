@@ -50,6 +50,11 @@ export function ProjectView({ id, go }: { id: string; go: (to: string) => void }
             {project?.name ?? "Project"}
             <span className="note">{episodes.length} episode{episodes.length === 1 ? "" : "s"}</span>
           </h2>
+          <div className="row" style={{ marginBottom: 14 }}>
+            <button className="ghost" onClick={() => go(`/project/${id}/matrix`)}>
+              ⑂ View universe matrix →
+            </button>
+          </div>
           {episodes.length === 0 && <div className="subline">No episodes yet — paste a script to create the first one.</div>}
           {episodes.map((e) => (
             <div key={e.id} className="history-item" onClick={() => go(`/episode/${e.id}`)}>

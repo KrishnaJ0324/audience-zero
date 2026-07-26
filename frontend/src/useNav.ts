@@ -6,7 +6,9 @@ export type Route =
   | { view: "project"; id: string }
   | { view: "episode"; id: string }
   | { view: "run"; id: string; sweep?: boolean }
-  | { view: "shared"; token: string };
+  | { view: "shared"; token: string }
+  | { view: "tree"; episodeId: string; versionId: string }
+  | { view: "matrix"; projectId: string };
 
 function parse(): Route {
   const hash = window.location.hash.replace(/^#/, "");
@@ -14,10 +16,12 @@ function parse(): Route {
   const parts = path.split("/").filter(Boolean); // ["run","run_x"]
   const q = new URLSearchParams(query);
   if (parts[0] === "personas") return { view: "personas" };
+  if (parts[0] === "project" && parts[1] && parts[2] === "matrix") return { view: "matrix", projectId: parts[1] };
   if (parts[0] === "project" && parts[1]) return { view: "project", id: parts[1] };
   if (parts[0] === "episode" && parts[1]) return { view: "episode", id: parts[1] };
   if (parts[0] === "run" && parts[1]) return { view: "run", id: parts[1], sweep: q.get("sweep") === "1" };
   if (parts[0] === "shared" && parts[1]) return { view: "shared", token: parts[1] };
+  if (parts[0] === "tree" && parts[1]) return { view: "tree", episodeId: parts[1], versionId: q.get("version") ?? "" };
   return { view: "projects" };
 }
 

@@ -35,6 +35,25 @@ class Beat(BaseModel):
     text: str
 
 
+class CharacterProfile(BaseModel):
+    """One character's entry in a version's story-bible spec."""
+
+    name: str
+    role: str = ""
+    behavior_notes: str = ""
+
+
+class MemorySpec(BaseModel):
+    """Structured story-bible schema an LLM call fills in (theme, character
+    roles/behaviors, cross-cutting constraints); ``memory_bible.render_markdown``
+    turns it into the ``memory.md`` text. Fresh per Version, never mutated —
+    a child version's spec is generated from its parent's, never edits it."""
+
+    theme: str = ""
+    characters: list[CharacterProfile] = Field(default_factory=list)
+    constraints: list[str] = Field(default_factory=list)
+
+
 class Version(BaseModel):
     """A concrete, analyzable transcript+beats (script or produced audio). The
     unit an AnalysisRun scores. Formerly ``Episode``."""
@@ -50,6 +69,10 @@ class Version(BaseModel):
     episode_id: str = ""
     label: str = "v1"
     parent_version_id: str | None = None
+    universe_id: str = ""  # "" = unassigned; explicit, producer-tagged parallel timeline
+    # story bible — generated on demand (never automatic), fresh per version
+    memory_spec: MemorySpec | None = None
+    memory_md: str = ""
     created_at: str = Field(default_factory=_now)
 
 
@@ -71,6 +94,71 @@ class EpisodeMeta(BaseModel):
     id: str
     project_id: str
     title: str
+    sequence: int = 0  # position in the project's episode order (1, 2, 3...)
+    created_at: str = Field(default_factory=_now)
+
+
+class Universe(BaseModel):
+    """A named parallel timeline that threads the same storyline's Versions
+    across successive Episodes in a Project (e.g. Episode 2's 'Universe B'
+    continues Episode 1's 'Universe B'). Assignment is always explicit —
+    producer-tagged, never inferred."""
+
+    id: str
+    project_id: str
+    name: str
+    created_at: str = Field(default_factory=_now)
+
+
+# --------------------------------------------------------------------------- #
+# Time-travel story tree — free-form branching off any beat of a trunk Version
+# --------------------------------------------------------------------------- #
+
+
+class CharacterState(BaseModel):
+    """Copy-on-write per node — never shared/mutated across branches."""
+
+    name: str
+    memory: list[str] = Field(default_factory=list)
+    emotional_state: str = "neutral"
+    relationships: dict[str, str] = Field(default_factory=dict)
+
+
+class StoryAdvance(BaseModel):
+    """Provider return type for advance_story — new text + inferred character
+    states from ONE combined call."""
+
+    text: str
+    character_states: dict[str, CharacterState] = Field(default_factory=dict)
+    summary: str = ""
+
+
+class ConsistencyIssue(BaseModel):
+    id: str
+    severity: Literal["info", "warning", "critical"] = "warning"
+    summary: str
+    conflicting_fact: str = ""
+    character: str = ""
+
+
+class StoryNode(BaseModel):
+    """One node in a story's branch tree. Immutable once created — a branch is
+    always a new row with a new id and parent_node_id set, never an edit to an
+    existing node. This is what makes 'never mutates history' hold with no
+    special-case logic anywhere else."""
+
+    id: str
+    root_version_id: str
+    episode_id: str = ""
+    project_id: str = ""
+    parent_node_id: str | None = None
+    beat_index: int = 0
+    prompt: str = ""
+    text: str
+    summary: str = ""
+    character_states: dict[str, CharacterState] = Field(default_factory=dict)
+    consistency_issues: list[ConsistencyIssue] = Field(default_factory=list)
+    label: str = ""
     created_at: str = Field(default_factory=_now)
 
 

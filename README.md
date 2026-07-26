@@ -25,19 +25,21 @@ LLM/STT/TTS automatically when a key is present.
 ## Quickstart
 
 Prerequisites: **Python 3.10+**, **Node 18+**. A venv with backend deps is
-already provisioned at `backend/.venv`; if you're starting fresh, recreate it
-(see [Fresh setup](#fresh-setup)).
+already provisioned one directory above `audience-zero/` (`../venv`); if
+you're starting fresh, recreate it (see [Fresh setup](#fresh-setup)).
 
 ### 1. Backend (terminal 1)
 
 ```bash
 cd backend
 # seed the cached golden-path demo run (optional but recommended for demos)
-.venv/bin/python scripts/seed_demo.py
+../venv/bin/python scripts/seed_demo.py
 # start the API gateway
-.venv/bin/python -m uvicorn app.main:app --port 8000
+../venv/bin/python -m uvicorn app.main:app --port 8000
 ```
-> On Windows the interpreter is `.venv\Scripts\python.exe`.
+> On Windows the interpreter is `..\venv\Scripts\python.exe`. The venv is not
+> part of this git repo — it lives one directory above `audience-zero/` — see
+> [Fresh setup](#fresh-setup) if you're starting from scratch.
 
 ### 2. Frontend (terminal 2)
 
@@ -133,6 +135,79 @@ Everything stays **mock-first / offline**; the dev SQLite DB is disposable
 (re-seed with `scripts/seed_demo.py`). Deep-links: `#/run/:id`,
 `#/run/:id?sweep=1` (auto-run Population Sweep), `#/shared/:token`.
 
+---
+
+## Time-travel branching & parallel universes (v3)
+
+Two related but distinct branching systems, plus a story bible that threads
+memory between them.
+
+### Story Tree — rewrite one episode from any beat (`#/tree/:episodeId?version=:id`)
+
+Open any version's **"Explore branches →"** link from its Episode page. The
+first visit seeds a linear spine of `StoryNode`s (one per existing beat,
+idempotent — safe to revisit). Click any node, type free-form text ("Kael
+abandons the gate and flees into the forest"), and **Branch from here**
+generates a new sibling node — the original beat and every other branch stay
+untouched, so exploring three different "what happens next"s from the same
+point never overwrites the other two. Each node carries a full, independent
+copy of character state (memory / emotional state / relationships); branching
+never shares or mutates that state across siblings (copy-on-write). A separate,
+non-blocking consistency pass flags contradictions against everything
+established up that branch's own ancestor chain — it only ever warns, never
+retries or blocks. When a branch is ready to actually be scored by the persona
+panel, **materialize** it: this walks the branch's ancestor chain into an
+ordinary `Version` and hands it to the *exact same* `/versions/{id}/analyze`
+pipeline every other version uses — no special-cased scoring path.
+
+### Universe Graph — episodes across a whole series (`#/project/:id/matrix`, linked from a project's page)
+
+Episodes **grow in a straight line by default** — adding a new episode to a
+project auto-chains its first version onto whatever the project's current
+"main" line last ended on. Nothing needs to be tagged or assigned for that
+common case.
+
+A "universe" (a named parallel timeline) is created automatically the moment
+an *existing* episode is **altered** — i.e. you add a second version to an
+episode that already has one. That alteration itself is the branch point: the
+new version auto-mints a universe and inherits the original's own parent, so
+the two versions become true siblings fanning out from whichever episode came
+before. **No manual "assign this version to a universe" step exists in the
+normal flow** — the graph reflects branch structure that already exists in
+your version history.
+
+The graph (`UniverseGraphCanvas`) renders every version as one tree via
+`parent_version_id` — not fixed per-universe lanes — so a version with three
+children draws three edges fanning out from one node, and a version with none
+is a single line falling straight down. Click any solid node to **open its
+episode** or explicitly **branch a brand-new universe from it** (an optional
+name — auto-numbered if left blank — plus an optional free-form instruction,
+either AI-generates an opening scene or hands you off to paste a script
+yourself). Click a dashed **ghost node** — the one open next-step under any
+line that hasn't continued yet — to grow *that same* line forward instead of
+starting a new one.
+
+**So: to continue into the next episode of a specific branch**, open the
+project's Universe Graph, find that branch's leaf node (its dashed ghost node
+one row below is the "next episode" slot), click the ghost node, and either
+generate an opening scene or paste a script. To *fork yet another* alternate
+future from an existing episode instead, click the solid node itself and use
+"Branch a new universe from here."
+
+### Story Bible (`memory.md`) — theme, character roles, and constraints across episodes
+
+A `Version`'s story bible is a structured, LLM-filled spec (`theme`,
+`characters: [{name, role, behavior_notes}]`, `constraints`) rendered to
+markdown — generated on demand from a version's Episode page ("📖 Generate
+story bible"), **never automatically** (no surprise paid calls). It's a
+separate, higher-level artifact from the Story Tree's per-character state —
+both feed into generation, but the bible captures cross-cutting narrative
+rules a single character's memory doesn't. Every version's bible is
+immutable and fresh — a child's bible is generated *from* its parent's, never
+an edit to it. Continuing a universe automatically carries the parent's bible
+forward into the child in the same action, but **only if the parent already
+has one** — a project that never opts into story bibles never pays for them.
+
 ## Architecture
 
 Maps 1:1 to the system design. Contracts over coupling; personas are data, not
@@ -157,7 +232,8 @@ Ingestion ─► Beat Segmenter ─► Panel Orchestrator ─┬─► Persona A
 
 | Component | File |
 |---|---|
-| Data contracts (frozen Day 0) | `backend/app/contracts.py` |
+| Data contracts (frozen Day 0 + v3 additions) | `backend/app/contracts.py` |
+| Coordinator (wires every service; API + tests both drive this) | `backend/app/pipeline.py` |
 | Persona Registry (`personas/*.yaml`) | `backend/app/services/persona_registry.py` |
 | Ingestion + Beat Segmenter | `backend/app/services/ingestion.py` |
 | Persona Agent Runtime | `backend/app/services/persona_runtime.py` |
@@ -165,20 +241,30 @@ Ingestion ─► Beat Segmenter ─► Panel Orchestrator ─┬─► Persona A
 | **Verdict Engine** (pure, unit-tested) | `backend/app/services/verdict_engine.py` |
 | Revision Service | `backend/app/services/revision.py` |
 | Audio Production (TTS + WAV mix) | `backend/app/services/audio_production.py` |
-| Session Store (SQLite) | `backend/app/services/session_store.py` |
+| **Story Tree** — beat-level time-travel branching | `backend/app/services/story_tree.py` |
+| **Memory Bible** — renders a `MemorySpec` → `memory.md` (pure, no LLM call) | `backend/app/services/memory_bible.py` |
+| Session Store (SQLite — projects/episodes/versions/universes/runs/story_nodes/custom_personas) | `backend/app/services/session_store.py` |
 | Event bus + SSE | `backend/app/event_bus.py`, `events.py` |
 | Providers (mock / OpenAI) | `backend/app/providers/` |
 
 ### Providers
 
-Every external dependency (LLM judgment, STT, TTS, mixing) is a `Protocol`:
+Every external dependency (LLM judgment, STT, TTS, mixing) is a `Protocol`
+(`providers/base.py`), including the v3 story-branching operations —
+`advance_story` (one combined call: new scene text + updated character
+states), `check_consistency` (separate LLM-as-judge pass), `extract_character_state`
+(fold an already-written beat into cumulative state), and `generate_memory`
+(story-bible spec extraction):
 
 - **mock** — deterministic heuristics (`providers/heuristics.py`) produce
   genuinely divergent persona judgment with zero network; audio is synthesized
   with the stdlib `wave` module (distinct timbre per voice). No key, no ffmpeg.
+  The same heuristic philosophy covers branching — coarse but deterministic
+  character-state folding and antonym-cue consistency checks.
 - **openai** — real `gpt-4o`/`gpt-4o-mini` structured calls, `gpt-4o-transcribe`
   STT, and TTS. Degrades gracefully to the heuristic if a call fails, so one
-  flaky agent never blocks the panel.
+  flaky agent never blocks the panel — the same fallback covers every v3
+  operation too.
 
 ### The six personas (contrastive by design)
 
@@ -191,8 +277,10 @@ Every external dependency (LLM judgment, STT, TTS, mixing) is a `Protocol`:
 | Ananya | Genre-savvy critic | gpt-4o | Detects tropes; small weight, loud verdict |
 | Ravi | Cliffhanger addict | gpt-4o-mini | Scores almost entirely on the final hook |
 
-Scaling 6 → 12 = six more YAML files. The orchestrator never learns persona
-internals.
+Scaling the built-in roster is six more YAML files; scaling per-project is a
+custom persona (`#/personas`, DB-backed, no file edit) plus a toggle in that
+project's Test panel. Either way, the orchestrator never learns persona
+internals — every persona still emits the identical `PersonaReport` schema.
 
 ---
 
@@ -203,11 +291,17 @@ unit tests both run offline:
 
 ```bash
 cd backend
-AZ_PROVIDER=mock AZ_REVEAL_DELAY_S=0 .venv/bin/python -m pytest -q
+AZ_PROVIDER=mock AZ_REVEAL_DELAY_S=0 ../venv/bin/python -m pytest -q
 ```
 
 `AZ_PROVIDER=mock` is required, not cosmetic: `.env` carries a real key and
 `AZ_PROVIDER=auto`, so an unguarded run resolves to the OpenAI provider.
+
+`tests/conftest.py` points every test at a throwaway temp-directory database
+(and audio dir) via an autouse fixture — `get_settings()` is a cached
+singleton whose `db_path` otherwise defaults to the same file the live dev
+server reads from, so without this a test run would silently write fixture
+projects into your real database.
 
 - `test_verdict_engine.py` — locks the headline maths (aggregate curve,
   retention model, weakest-beat, before/after lift, degraded-panel safety).
@@ -215,6 +309,16 @@ AZ_PROVIDER=mock AZ_REVEAL_DELAY_S=0 .venv/bin/python -m pytest -q
   deliberately-boring-middle script dips in the middle, the thriller purist
   prefers thrillers and the romance binger prefers romance, and runs are
   deterministic.
+- `test_story_tree.py` — cumulative character state along a seeded spine,
+  copy-on-write isolation between sibling branches, non-blocking consistency
+  warnings, and the materialize seam into the ordinary analyze pipeline.
+- `test_universes.py` — episodes growing linearly by default, altering an
+  episode auto-branching a new universe, forking one version into several
+  distinct universe-children (the actual "one node, N edges" shape), and the
+  project matrix aggregation.
+- `test_memory_bible.py` — story-bible generation at the root, bundled
+  generation on continuation (only when the parent opted in), and a child's
+  bible inheriting the parent's characters/theme without mutating it.
 
 ---
 
@@ -271,7 +375,7 @@ run history and produced WAVs. Re-seed the cached golden run when that matters.
 Localhost is the drilled fallback; it needs no Databricks at all:
 
 ```bash
-cd backend && AZ_PROVIDER=mock .venv/bin/python -m uvicorn app.server:server --port 8000
+cd backend && AZ_PROVIDER=mock ../venv/bin/python -m uvicorn app.server:server --port 8000
 # then open http://localhost:8000  (same single-process topology as the deployed app)
 ```
 
@@ -281,18 +385,54 @@ Logs for a misbehaving deploy: `databricks apps logs audience-zero -p hackathon`
 
 ## API surface
 
+**Core golden path**
+
 | Method | Path | Purpose |
 |---|---|---|
-| `POST` | `/episodes` | JSON `{title,text}` **or** multipart audio → Episode + Beats |
-| `POST` | `/episodes/{id}/panel` | Trigger a run (async) → `{run_id}` |
+| `POST` | `/episodes` | JSON `{title,text}` **or** multipart audio → ad-hoc Version + Beats |
+| `POST` | `/versions/{id}/analyze` | Trigger a run (async) → `{run_id}` |
 | `GET` | `/runs/{id}/events` | **SSE** telemetry stream |
-| `GET` | `/runs/{id}` | Full `PanelRun` |
+| `GET` | `/runs/{id}` | Full `AnalysisRun` |
 | `POST` | `/runs/{id}/revise?target=weakest\|ending` | Fix the weakest beat (or strengthen the final beat) → RevisedScene + ProducedAudio |
 | `POST` | `/runs/{id}/rerun` | Re-run with the fix → before/after (drop lift, or binge lift for an ending fix) |
 | `POST` | `/runs/{id}/sweep?n=200` | Population Sweep → drop-point histogram (§2.10 stretch) |
-| `GET` | `/personas`, `/scripts`, `/runs`, `/health` | Registry / samples / history / status |
-| `GET` | `/episodes/{id}` | Full Episode (beats) — powers deep-link replay |
+| `GET` | `/scripts`, `/runs`, `/health` | Samples / history / status |
+| `GET` | `/episodes/{id}` | Full episode (versions + runs) — powers deep-link replay |
 | `GET` | `/audio/{file}` | Serve a produced/verdict WAV |
+
+**Projects, episodes, personas**
+
+| Method | Path | Purpose |
+|---|---|---|
+| `POST`/`GET` | `/projects` | Create / list projects |
+| `GET` | `/projects/{id}` | Project + its episodes |
+| `POST` | `/projects/{id}/episodes` | New episode (script or audio) — auto-chains onto the project's main timeline unless forking |
+| `POST` | `/episodes/{id}/versions?parent=&universe_id=` | Add a version to an existing episode ("altering" it auto-branches — see below) |
+| `GET` | `/personas` | Full library (built-in + custom), plain |
+| `GET` | `/projects/{id}/personas` | Library with **this project's** enabled state |
+| `POST` | `/projects/{id}/personas/{pid}/toggle` | Enable/disable a persona for this project only |
+| `POST`/`DELETE` | `/personas`, `/personas/{id}` | Create / delete a custom persona |
+| `POST` | `/personas/chat` | Multi-turn persona designer → `{reply, draft}` |
+
+**Time-travel branching (one episode, beat-level) — see `#/tree/:episodeId?version=:id`**
+
+| Method | Path | Purpose |
+|---|---|---|
+| `POST` | `/versions/{id}/tree/seed` | Fold an existing version's beats into a linear `StoryNode` spine (idempotent) |
+| `GET` | `/versions/{id}/tree` | All nodes for that version's tree |
+| `GET` | `/nodes/{id}` | One node |
+| `POST` | `/nodes/{id}/branch` | `{instruction}` → a new sibling node continuing from here (free-form, never edits history) |
+| `POST` | `/nodes/{id}/materialize` | Turn a node's ancestor chain into a real `Version` → feed it into `/versions/{id}/analyze` unchanged |
+
+**Cross-episode parallel universes — see `#/project/:id/matrix`**
+
+| Method | Path | Purpose |
+|---|---|---|
+| `GET` | `/projects/{id}/matrix` | `{universes, episodes, versions}` — everything the graph needs in one call |
+| `GET`/`POST` | `/projects/{id}/universes` | List / (rarely) explicitly create a universe |
+| `POST` | `/versions/{id}/universe` | Explicit assignment (legacy path — branching is normally automatic, see below) |
+| `POST` | `/versions/{id}/continue` | `{instruction?, new_universe_name?}` — continue this version's own universe forward, or **fork** a brand-new one from it |
+| `POST` | `/versions/{id}/memory` | Generate/refresh this version's story-bible (`memory.md`) from its parent's |
 
 The dashboard also supports **deep-link replay**: open `/?run=<run_id>` to load
 any persisted run as a static view. In dev, point the proxy at a non-default
@@ -303,33 +443,51 @@ backend with `VITE_PROXY_TARGET=http://localhost:8020 npm run dev`.
 ## Project structure
 
 ```
-audience-zero/
-├── backend/                 # ← the Databricks Apps source root
-│   ├── app.yaml             # Apps entry config (command + env, no secrets)
-│   ├── app/                 # FastAPI app, services, providers, contracts
-│   │   ├── main.py          # API gateway (local dev entry)
-│   │   └── server.py        # single-process entry: /api + static bundle
-│   ├── personas/            # 6 persona YAML configs (data, not code)
-│   ├── data/scripts/        # demo + 3 calibration scripts
-│   ├── scripts/seed_demo.py # pre-cache the golden run
-│   ├── static/              # built dashboard — generated, uncommitted, but
-│   │                        #   deliberately NOT gitignored: `databricks sync`
-│   │                        #   honours .gitignore and would skip the bundle
-│   ├── tests/               # verdict + divergence tests
-│   ├── requirements.txt     # runtime deps (fastapi/uvicorn unpinned for Apps)
-│   ├── requirements-dev.txt # + pytest
-│   └── .venv/               # Python environment
-├── frontend/                # React + Vite + Recharts dashboard
-├── scripts/deploy_databricks.sh
-└── plan.md                  # the original build plan
+z1hackathon/
+├── venv/                    # Python environment — one level ABOVE the repo
+└── audience-zero/           # ← this git repo
+    ├── backend/             # ← the Databricks Apps source root
+    │   ├── app.yaml         # Apps entry config (command + env, no secrets)
+    │   ├── app/             # FastAPI app, services, providers, contracts
+    │   │   ├── main.py      # API gateway (local dev entry)
+    │   │   ├── server.py    # single-process entry: /api + static bundle
+    │   │   ├── pipeline.py  # coordinates every service — the one class the API/tests drive
+    │   │   └── services/
+    │   │       ├── session_store.py  # SQLite (projects/episodes/versions/universes/
+    │   │       │                     #   runs/story_nodes/custom_personas/...)
+    │   │       ├── story_tree.py     # time-travel branching (beat-level, one episode)
+    │   │       ├── memory_bible.py   # renders a version's MemorySpec → memory.md
+    │   │       └── ...      # ingestion, orchestrator, verdict_engine, revision, ...
+    │   ├── personas/        # 6 built-in persona YAML configs (data, not code)
+    │   ├── data/scripts/    # demo + 3 calibration scripts
+    │   ├── scripts/seed_demo.py # pre-cache the golden run
+    │   ├── static/          # built dashboard — generated, uncommitted, but
+    │   │                    #   deliberately NOT gitignored: `databricks sync`
+    │   │                    #   honours .gitignore and would skip the bundle
+    │   ├── tests/           # conftest.py (isolated temp DB) + verdict/divergence/
+    │   │                    #   story-tree/universes/memory-bible tests
+    │   ├── requirements.txt     # runtime deps (fastapi/uvicorn unpinned for Apps)
+    │   └── requirements-dev.txt # + pytest
+    ├── frontend/src/
+    │   ├── components/
+    │   │   ├── Sidebar.tsx, Header.tsx      # persistent nav shell
+    │   │   ├── ProjectsView, ProjectView, EpisodeView, RunView
+    │   │   ├── PersonasView.tsx             # custom persona library + chat designer
+    │   │   ├── StoryTreeView, StoryGraphCanvas     # time-travel branching UI
+    │   │   └── UniverseMatrixView, UniverseGraphCanvas  # cross-episode branching UI
+    │   └── useNav.ts        # hash routes: /, /personas, /project/:id,
+    │                        #   /project/:id/matrix, /episode/:id, /tree/:id, /run/:id
+    ├── scripts/deploy_databricks.sh
+    └── plan.md              # the original build plan
 ```
 
 ## Fresh setup
 
 ```bash
-python3 -m venv backend/.venv
-backend/.venv/bin/pip install -r backend/requirements-dev.txt   # macOS/Linux
-# backend\.venv\Scripts\python.exe -m pip install -r backend\requirements-dev.txt   # Windows
+# venv sits one level above this repo, not inside it
+python3 -m venv ../venv
+../venv/bin/pip install -r backend/requirements-dev.txt   # macOS/Linux
+# ..\venv\Scripts\python.exe -m pip install -r backend\requirements-dev.txt   # Windows
 cd frontend && npm install
 ```
 
